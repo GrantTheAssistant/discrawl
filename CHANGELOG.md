@@ -18,6 +18,8 @@
   `doctor --json` control surface for launchers, automation, and CI checks.
 - Refresh the repo-local `discrawl` agent skill for local Discord archive,
   freshness, query, boundary, TUI, and verification workflows.
+- Document `discrawl sql` read-only query examples in the repo-local agent
+  skill so agents can do exact archive counts and rankings safely.
 
 ### Fixes
 
