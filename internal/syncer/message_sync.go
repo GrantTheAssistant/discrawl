@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/vincentkoc/crawlkit/progress"
+	"github.com/openclaw/crawlkit/progress"
 
 	"github.com/openclaw/discrawl/internal/store"
 )
@@ -187,7 +187,7 @@ func (s *Syncer) syncMessageChannelsConcurrent(
 }
 
 func (s *Syncer) clearUnavailableChannel(ctx context.Context, channelID string) error {
-	if s.store == nil || channelID == "" {
+	if s == nil || s.store == nil || channelID == "" {
 		return nil
 	}
 	return s.store.DeleteSyncState(ctx, "channel:"+channelID+":unavailable")
@@ -616,6 +616,9 @@ func (p *messageSyncProgress) record(channel *discordgo.Channel, count int) {
 }
 
 func (p *messageSyncProgress) recordSkip(channel *discordgo.Channel, err error) {
+	if p == nil {
+		return
+	}
 	outcome := syncErrorOutcome(err)
 	p.mu.Lock()
 	switch outcome {

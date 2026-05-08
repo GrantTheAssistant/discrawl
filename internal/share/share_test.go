@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openclaw/crawlkit/mirror"
+	"github.com/openclaw/crawlkit/snapshot"
 	"github.com/stretchr/testify/require"
 
 	"github.com/openclaw/discrawl/internal/store"
@@ -71,6 +73,127 @@ func TestExportImportRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, changed)
 	require.Equal(t, manifest.GeneratedAt, imported.GeneratedAt)
+}
+
+func TestImportIfChangedUsesIncrementalTailImport(t *testing.T) {
+	ctx := context.Background()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+
+	repo := filepath.Join(t.TempDir(), "share")
+	manifest, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	require.NotEmpty(t, tableEntry(t, manifest, "messages").FileManifests)
+
+	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	_, changed, err := ImportIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, src.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID:                "m2",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			AuthorName:        "Peter",
+			MessageType:       0,
+			CreatedAt:         now,
+			Content:           "delta landed fast",
+			NormalizedContent: "delta landed fast",
+			RawJSON:           `{"author":{"username":"Peter"}}`,
+		},
+	}}))
+	updated, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	require.NotEqual(t, manifest.GeneratedAt, updated.GeneratedAt)
+
+	var progress []ImportProgress
+	imported, changed, err := ImportIfChanged(ctx, dst, Options{
+		RepoPath: repo,
+		Branch:   "main",
+		Progress: func(p ImportProgress) { progress = append(progress, p) },
+	})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, updated.GeneratedAt, imported.GeneratedAt)
+	require.Contains(t, progressPhases(progress), "table_start")
+	require.NotContains(t, progressPhases(progress), "rebuild_fts")
+
+	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "delta landed", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "m2", results[0].MessageID)
+	state, err := dst.GetSyncState(ctx, LastImportManifestJSONScope)
+	require.NoError(t, err)
+	require.Contains(t, state, `"file_manifests"`)
+}
+
+func TestImportIfChangedInfersLegacyManifestFilesFromGit(t *testing.T) {
+	ctx := context.Background()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+
+	repo := filepath.Join(t.TempDir(), "share")
+	require.NoError(t, exec.CommandContext(ctx, "git", "init", repo).Run())
+	configureGitUser(t, repo)
+	manifest, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	writeShareManifest(t, repo, stripFileManifests(manifest))
+	require.NoError(t, exec.CommandContext(ctx, "git", "-C", repo, "add", ".").Run())
+	require.NoError(t, exec.CommandContext(ctx, "git", "-C", repo, "commit", "-m", "initial snapshot").Run())
+
+	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	_, changed, err := ImportIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, src.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID:                "m2",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			AuthorName:        "Peter",
+			MessageType:       0,
+			CreatedAt:         now,
+			Content:           "legacy git delta",
+			NormalizedContent: "legacy git delta",
+			RawJSON:           `{"author":{"username":"Peter"}}`,
+		},
+	}}))
+	updated, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	writeShareManifest(t, repo, stripFileManifests(updated))
+	require.NoError(t, exec.CommandContext(ctx, "git", "-C", repo, "add", ".").Run())
+	require.NoError(t, exec.CommandContext(ctx, "git", "-C", repo, "commit", "-m", "tail snapshot").Run())
+
+	previous, ok := PreviousImportedManifest(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	require.True(t, ok)
+	planned, supported := shareIncrementalPlan(snapshot.PlanIncrementalImport(snapshotManifest(previous), snapshotManifest(enrichManifestFromGit(ctx, repo, "HEAD", stripFileManifests(updated)))))
+	require.True(t, supported, "%+v", planned)
+	require.True(t, planned.Changed(), "%+v", planned)
+
+	var progress []ImportProgress
+	_, changed, err = ImportIfChanged(ctx, dst, Options{
+		RepoPath: repo,
+		Branch:   "main",
+		Progress: func(p ImportProgress) { progress = append(progress, p) },
+	})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.NotContains(t, progressPhases(progress), "rebuild_fts")
+	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "legacy git delta", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
 }
 
 func TestApplyImportPragmasKeepCrashRecoveryEnabled(t *testing.T) {
@@ -652,6 +775,10 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	require.Equal(t, `insert into "messages"("id","weird""column") values(?,?)`, insertSQL("messages", []string{"id", `weird"column`}))
 	require.Equal(t, "blob", exportValue([]byte("blob")))
 	require.Equal(t, "plain", exportValue("plain"))
+	require.Equal(t, int64(42), importValue(json.Number("42")))
+	require.Equal(t, 3.5, importValue(json.Number("3.5")))
+	require.Equal(t, "nope", importValue(json.Number("nope")))
+	require.Equal(t, "plain", importValue("plain"))
 	require.Equal(t, "plain", stringValue("plain"))
 	require.Equal(t, "42", stringValue(json.Number("42")))
 	require.Empty(t, stringValue(42))
@@ -661,6 +788,9 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 
 	query, args := snapshotExportQuery("messages")
 	require.Equal(t, "select * from messages where guild_id != ?", query)
+	require.Equal(t, []any{directMessageGuildID}, args)
+	query, args = snapshotExportQuery("guilds")
+	require.Equal(t, "select * from guilds where id != ?", query)
 	require.Equal(t, []any{directMessageGuildID}, args)
 	query, args = snapshotExportQuery("sync_state")
 	require.Equal(t, "select * from sync_state where scope not like 'wiretap:%'", query)
@@ -672,9 +802,15 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	query, args = snapshotDeleteQuery("channels")
 	require.Equal(t, "delete from channels where guild_id != ?", query)
 	require.Equal(t, []any{directMessageGuildID}, args)
+	query, args = snapshotDeleteQuery("guilds")
+	require.Equal(t, "delete from guilds where id != ?", query)
+	require.Equal(t, []any{directMessageGuildID}, args)
 	query, args = snapshotDeleteQuery("message_events")
 	require.Equal(t, "delete from message_events where guild_id != ?", query)
 	require.Equal(t, []any{directMessageGuildID}, args)
+	query, args = snapshotDeleteQuery("sync_state")
+	require.Equal(t, "delete from sync_state where scope not like 'wiretap:%'", query)
+	require.Nil(t, args)
 	query, args = snapshotDeleteQuery("custom")
 	require.Equal(t, "delete from custom", query)
 	require.Nil(t, args)
@@ -684,6 +820,20 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	require.True(t, isDirectMessageSnapshotRow("sync_state", map[string]any{"scope": "wiretap:last_import"}))
 	require.False(t, isDirectMessageSnapshotRow("sync_state", map[string]any{"scope": "share:last_import"}))
 	require.False(t, isDirectMessageSnapshotRow("custom", map[string]any{"guild_id": directMessageGuildID}))
+	require.True(t, isLocalOnlyGuildID(directMessageGuildID))
+	require.False(t, isLocalOnlyGuildID("g1"))
+
+	require.Equal(t, []string{"message_id", "guild_id"}, importColumns(TableManifest{Name: "message_events", Columns: []string{"event_id", "message_id", "guild_id"}}))
+	require.Equal(t, []string{"event_id", "message_id"}, importColumns(TableManifest{Name: "messages", Columns: []string{"event_id", "message_id"}}))
+	require.Equal(t, 7, manifestRowCount(Manifest{
+		Tables:     []TableManifest{{Rows: 2}, {Rows: 3}},
+		Embeddings: []EmbeddingManifest{{Rows: 2}},
+	}))
+	var seen []ImportProgress
+	Options{Progress: func(progress ImportProgress) { seen = append(seen, progress) }}.reportProgress(ImportProgress{Phase: "phase"})
+	require.Equal(t, []ImportProgress{{Phase: "phase"}}, seen)
+	Options{}.reportProgress(ImportProgress{Phase: "ignored"})
+	require.Equal(t, mirror.Options{RepoPath: "repo", Remote: "origin", Branch: "main"}, mirrorOptions(Options{RepoPath: "repo", Remote: "origin", Branch: "main"}))
 
 	var buf bytes.Buffer
 	cw := &countingWriter{w: &buf}
@@ -851,6 +1001,13 @@ func writeShareManifest(t *testing.T, repo string, manifest Manifest) {
 	body, err := json.MarshalIndent(manifest, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(repo, ManifestName), append(body, '\n'), 0o600))
+}
+
+func stripFileManifests(manifest Manifest) Manifest {
+	for i := range manifest.Tables {
+		manifest.Tables[i].FileManifests = nil
+	}
+	return manifest
 }
 
 func snapshotTableText(t *testing.T, repo string, table TableManifest) string {

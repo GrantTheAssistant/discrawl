@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	crawlstore "github.com/vincentkoc/crawlkit/store"
+	crawlstore "github.com/openclaw/crawlkit/store"
 )
 
 const (

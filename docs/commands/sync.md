@@ -7,7 +7,7 @@ By default, `sync` runs both live/local sources and does **not** import the Git 
 - Discord bot-token sync for bot-visible guild data
 - local Discord Desktop cache import for classifiable cached messages and proven DMs
 
-Use [`update`](update.html) when you want to pull/import the shared Git snapshot. If you intentionally want a sync run to import the snapshot before live deltas, pass `--update=auto` (only when stale) or `--update=force` (always). `--no-update` is accepted as an explicit no-op alias for the default.
+Use [`update`](update.html) when you want to pull/import the shared Git snapshot. Snapshot imports normally use changed-shard deltas, but unsafe table changes fall back to a full import. If you intentionally want a sync run to import the snapshot before live deltas, pass `--update=auto` (only when stale) or `--update=force` (always). `--no-update` is accepted as an explicit no-op alias for the default.
 
 Run one explicit `--full` pass when you want a complete historical guild archive. Use plain `sync` afterward for frequent latest-message and desktop-cache refreshes.
 
@@ -70,6 +70,8 @@ discrawl sync --with-embeddings
 - Heartbeat logs (`message sync waiting`) name the oldest active channel and per-channel page activity if in-flight channels stop completing for a while.
 - Every run ends with a `message sync finished` summary.
 - Each channel crawl has a bounded runtime budget; pathological channels are deferred and retried next sync.
+- Retryable failures and unavailable-channel markers are tracked per channel; stale unavailable markers are cleared after a later successful crawl.
+- Marker cleanup is best-effort, so one missing local sync-state row cannot crash the run.
 - Full sync member refresh is best-effort and gives up after five minutes without a caller-supplied deadline.
 - When the archive is already complete, `sync --full` reuses backlog markers and limits steady-state refresh to live top-level channels plus active threads.
 

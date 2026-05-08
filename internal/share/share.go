@@ -8,23 +8,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/openclaw/crawlkit/mirror"
+	"github.com/openclaw/crawlkit/snapshot"
 	"github.com/openclaw/discrawl/internal/store"
-	"github.com/vincentkoc/crawlkit/mirror"
-	"github.com/vincentkoc/crawlkit/snapshot"
 )
 
 const (
 	ManifestName                = "manifest.json"
 	LastImportSyncScope         = "share:last_import_at"
 	LastImportManifestSyncScope = "share:last_import_manifest_generated_at"
+	LastImportManifestJSONScope = "share:last_import_manifest_json"
 	directMessageGuildID        = "@me"
 )
 
@@ -159,6 +162,7 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 	if err != nil {
 		return Manifest{}, err
 	}
+	manifest = enrichManifestFromGit(ctx, opts.RepoPath, "HEAD", manifest)
 	opts.reportProgress(ImportProgress{Phase: "start", TotalRows: manifestRowCount(manifest)})
 	restorePragmas, err := applyImportPragmas(ctx, s.DB())
 	if err != nil {
@@ -262,6 +266,7 @@ func ImportIfChanged(ctx context.Context, s *store.Store, opts Options) (Manifes
 	if err != nil {
 		return Manifest{}, false, err
 	}
+	manifest = enrichManifestFromGit(ctx, opts.RepoPath, "HEAD", manifest)
 	if ManifestAlreadyImported(ctx, s, manifest) {
 		if opts.IncludeEmbeddings {
 			if err := ImportEmbeddings(ctx, s, opts, manifest); err != nil {
@@ -273,11 +278,92 @@ func ImportIfChanged(ctx context.Context, s *store.Store, opts Options) (Manifes
 		}
 		return manifest, false, nil
 	}
+	if previous, ok := PreviousImportedManifest(ctx, s, opts); ok {
+		imported, changed, err := ImportIncremental(ctx, s, opts, previous, manifest)
+		if err == nil || !errors.Is(err, errIncrementalUnsupported) {
+			return imported, changed, err
+		}
+	}
 	imported, err := Import(ctx, s, opts)
 	if err != nil {
 		return Manifest{}, false, err
 	}
 	return imported, true, nil
+}
+
+var errIncrementalUnsupported = errors.New("incremental share import unsupported")
+
+func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previous, manifest Manifest) (Manifest, bool, error) {
+	plan := snapshot.PlanIncrementalImport(snapshotManifest(previous), snapshotManifest(manifest))
+	plan, supported := shareIncrementalPlan(plan)
+	if !supported {
+		return Manifest{}, false, errIncrementalUnsupported
+	}
+	if !plan.Changed() {
+		if err := MarkImported(ctx, s, manifest); err != nil {
+			return Manifest{}, false, err
+		}
+		return manifest, false, nil
+	}
+	opts.reportProgress(ImportProgress{Phase: "start", TotalRows: manifestRowCount(manifest)})
+	restorePragmas, err := applyImportPragmas(ctx, s.DB())
+	if err != nil {
+		return Manifest{}, false, err
+	}
+	pragmasRestored := false
+	defer func() {
+		if !pragmasRestored {
+			_ = restorePragmas(ctx)
+		}
+	}()
+	if _, _, err := snapshot.ImportIncremental(ctx, snapshot.IncrementalImportOptions{
+		DB:      s.DB(),
+		RootDir: opts.RepoPath,
+		Current: snapshotManifest(manifest),
+		Plan:    plan,
+		Progress: func(progress snapshot.ImportProgress) {
+			opts.reportProgress(ImportProgress{
+				Phase:     progress.Phase,
+				Table:     progress.Table,
+				File:      progress.File,
+				FileIndex: progress.FileIndex,
+				FileCount: progress.FileCount,
+				Rows:      progress.Rows,
+				TotalRows: progress.TotalRows,
+			})
+		},
+		Filter: func(table string, row map[string]any) (bool, error) {
+			return !isDirectMessageSnapshotRow(table, row), nil
+		},
+		DeleteTable: func(ctx context.Context, tx *sql.Tx, table string) error {
+			query, args := snapshotDeleteQuery(table)
+			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+				return fmt.Errorf("clear %s: %w", table, err)
+			}
+			return nil
+		},
+		ImportRow: importIncrementalSnapshotRow,
+		AfterImport: func(ctx context.Context, tx *sql.Tx) error {
+			if err := repairImportedGuildIDs(ctx, tx); err != nil {
+				return err
+			}
+			if opts.IncludeEmbeddings {
+				return importEmbeddings(ctx, tx, opts, manifest.Embeddings)
+			}
+			return nil
+		},
+	}); err != nil {
+		return Manifest{}, false, err
+	}
+	if err := MarkImported(ctx, s, manifest); err != nil {
+		return Manifest{}, false, err
+	}
+	if err := restorePragmas(ctx); err != nil {
+		return Manifest{}, false, err
+	}
+	pragmasRestored = true
+	opts.reportProgress(ImportProgress{Phase: "done", TotalRows: manifestRowCount(manifest)})
+	return manifest, true, nil
 }
 
 func (opts Options) reportProgress(progress ImportProgress) {
@@ -340,7 +426,173 @@ func MarkImported(ctx context.Context, s *store.Store, manifest Manifest) error 
 	if manifest.GeneratedAt.IsZero() {
 		return nil
 	}
-	return s.SetSyncState(ctx, LastImportManifestSyncScope, manifest.GeneratedAt.Format(time.RFC3339Nano))
+	if err := s.SetSyncState(ctx, LastImportManifestSyncScope, manifest.GeneratedAt.Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	body, err := json.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("marshal imported manifest state: %w", err)
+	}
+	return s.SetSyncState(ctx, LastImportManifestJSONScope, string(body))
+}
+
+func PreviousImportedManifest(ctx context.Context, s *store.Store, opts Options) (Manifest, bool) {
+	body, err := s.GetSyncState(ctx, LastImportManifestJSONScope)
+	if err == nil && strings.TrimSpace(body) != "" {
+		var manifest Manifest
+		if json.Unmarshal([]byte(body), &manifest) == nil && !manifest.GeneratedAt.IsZero() {
+			return manifest, true
+		}
+	}
+	last, err := s.GetSyncState(ctx, LastImportManifestSyncScope)
+	if err != nil || strings.TrimSpace(last) == "" {
+		return Manifest{}, false
+	}
+	generatedAt, err := time.Parse(time.RFC3339Nano, last)
+	if err != nil {
+		return Manifest{}, false
+	}
+	manifest, err := manifestFromGitHistory(ctx, opts.RepoPath, generatedAt)
+	if err != nil {
+		return Manifest{}, false
+	}
+	return manifest, true
+}
+
+func manifestFromGitHistory(ctx context.Context, repoPath string, generatedAt time.Time) (Manifest, error) {
+	out, err := output(ctx, repoPath, "git", "log", "--format=%H", "--max-count=500", "--", ManifestName)
+	if err != nil {
+		return Manifest{}, err
+	}
+	for _, hash := range strings.Fields(out) {
+		body, err := output(ctx, repoPath, "git", "show", hash+":"+ManifestName)
+		if err != nil {
+			continue
+		}
+		var manifest Manifest
+		if err := json.Unmarshal([]byte(body), &manifest); err != nil {
+			continue
+		}
+		if manifest.GeneratedAt.Equal(generatedAt) {
+			return enrichManifestFromGit(ctx, repoPath, hash, manifest), nil
+		}
+	}
+	return Manifest{}, fmt.Errorf("imported manifest %s not found in git history", generatedAt.Format(time.RFC3339Nano))
+}
+
+func enrichManifestFromGit(ctx context.Context, repoPath, rev string, manifest Manifest) Manifest {
+	if strings.TrimSpace(repoPath) == "" || manifestHasFileManifests(manifest) {
+		return manifest
+	}
+	files, err := gitTreeFiles(ctx, repoPath, rev)
+	if err != nil {
+		return manifest
+	}
+	for i := range manifest.Tables {
+		table := &manifest.Tables[i]
+		if len(table.FileManifests) > 0 {
+			continue
+		}
+		paths := table.Files
+		if len(paths) == 0 && strings.TrimSpace(table.File) != "" {
+			paths = []string{table.File}
+		}
+		table.FileManifests = make([]snapshot.FileManifest, 0, len(paths))
+		for _, path := range paths {
+			info, ok := files[path]
+			if !ok {
+				table.FileManifests = nil
+				break
+			}
+			rows := 0
+			if len(paths) == 1 {
+				rows = table.Rows
+			}
+			table.FileManifests = append(table.FileManifests, snapshot.FileManifest{
+				Path:   path,
+				Rows:   rows,
+				Size:   info.size,
+				SHA256: "git:" + info.object,
+			})
+		}
+	}
+	return manifest
+}
+
+func manifestHasFileManifests(manifest Manifest) bool {
+	for _, table := range manifest.Tables {
+		if (len(table.Files) > 0 || strings.TrimSpace(table.File) != "") && len(table.FileManifests) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+type gitTreeFile struct {
+	object string
+	size   int64
+}
+
+func gitTreeFiles(ctx context.Context, repoPath, rev string) (map[string]gitTreeFile, error) {
+	if strings.TrimSpace(rev) == "" {
+		rev = "HEAD"
+	}
+	out, err := output(ctx, repoPath, "git", "ls-tree", "-r", "-l", rev, "--", "tables")
+	if err != nil {
+		return nil, err
+	}
+	files := map[string]gitTreeFile{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		size, _ := strconv.ParseInt(fields[3], 10, 64)
+		files[fields[4]] = gitTreeFile{object: fields[2], size: size}
+	}
+	return files, nil
+}
+
+func snapshotManifest(manifest Manifest) snapshot.Manifest {
+	return snapshot.Manifest{
+		Version:     manifest.Version,
+		GeneratedAt: manifest.GeneratedAt,
+		Tables:      manifest.Tables,
+		Files:       manifest.Files,
+	}
+}
+
+func shareIncrementalPlan(plan snapshot.ImportPlan) (snapshot.ImportPlan, bool) {
+	if plan.Full {
+		return plan, false
+	}
+	out := snapshot.ImportPlan{Tables: make([]snapshot.TableImportPlan, 0, len(plan.Tables))}
+	for _, tablePlan := range plan.Tables {
+		switch tablePlan.Mode {
+		case snapshot.TableImportSkip:
+			out.Tables = append(out.Tables, tablePlan)
+		case snapshot.TableImportFiles:
+			switch tablePlan.Table.Name {
+			case "messages":
+				out.Tables = append(out.Tables, tablePlan)
+			case "sync_state":
+				tablePlan.Mode = snapshot.TableImportReplace
+				tablePlan.Files = nil
+				tablePlan.Reason = "replace sync_state to avoid stale cursors"
+				out.Tables = append(out.Tables, tablePlan)
+			default:
+				return plan, false
+			}
+		case snapshot.TableImportReplace:
+			if tablePlan.Table.Name != "sync_state" {
+				return plan, false
+			}
+			out.Tables = append(out.Tables, tablePlan)
+		default:
+			return plan, false
+		}
+	}
+	return out, true
 }
 
 func ReadManifest(repoPath string) (Manifest, error) {
@@ -872,6 +1124,112 @@ func importValue(value any) any {
 	default:
 		return v
 	}
+}
+
+func importIncrementalSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) error {
+	if table == "message_events" || table == "mention_events" {
+		delete(row, "event_id")
+	}
+	if err := insertOrReplaceSnapshotRow(ctx, tx, table, row); err != nil {
+		return err
+	}
+	if table != "messages" {
+		return nil
+	}
+	messageID := stringValue(row["id"])
+	if messageID == "" {
+		return nil
+	}
+	return upsertMessageFTSRow(ctx, tx, messageID)
+}
+
+func insertOrReplaceSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) error {
+	cols := make([]string, 0, len(row))
+	for col := range row {
+		cols = append(cols, col)
+	}
+	sort.Strings(cols)
+	quoted := make([]string, 0, len(cols))
+	placeholders := make([]string, 0, len(cols))
+	args := make([]any, 0, len(cols))
+	for _, col := range cols {
+		quoted = append(quoted, quoteIdent(col))
+		placeholders = append(placeholders, "?")
+		args = append(args, importValue(row[col]))
+	}
+	stmt := "insert or replace into " + quoteIdent(table) + "(" + strings.Join(quoted, ",") + ") values(" + strings.Join(placeholders, ",") + ")"
+	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+		return fmt.Errorf("insert %s: %w", table, err)
+	}
+	return nil
+}
+
+func upsertMessageFTSRow(ctx context.Context, tx *sql.Tx, messageID string) error {
+	rowID, ok := messageFTSRowID(messageID)
+	if !ok {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `delete from message_fts where rowid = ?`, rowID); err != nil {
+		return fmt.Errorf("delete message_fts %s: %w", messageID, err)
+	}
+	var (
+		guildID     string
+		channelID   string
+		authorID    string
+		authorName  string
+		channelName string
+		content     string
+	)
+	if err := tx.QueryRowContext(ctx, `
+		select
+			m.guild_id,
+			m.channel_id,
+			coalesce(m.author_id, ''),
+			coalesce(
+				json_extract(m.raw_json, '$.member.nick'),
+				json_extract(m.raw_json, '$.author.global_name'),
+				json_extract(m.raw_json, '$.author.username'),
+				''
+			),
+			coalesce(c.name, ''),
+			m.normalized_content
+		from messages m
+		left join channels c on c.id = m.channel_id
+		where m.id = ?
+	`, messageID).Scan(&guildID, &channelID, &authorID, &authorName, &channelName, &content); err != nil {
+		return fmt.Errorf("query message_fts %s: %w", messageID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		insert into message_fts(rowid, message_id, guild_id, channel_id, author_id, author_name, channel_name, content)
+		values(?, ?, ?, ?, ?, ?, ?, ?)
+	`, rowID, messageID, guildID, channelID, nullIfEmpty(authorID), authorName, channelName, content); err != nil {
+		return fmt.Errorf("insert message_fts %s: %w", messageID, err)
+	}
+	return nil
+}
+
+func messageFTSRowID(messageID string) (int64, bool) {
+	if messageID == "" {
+		return 0, false
+	}
+	rowID, err := strconv.ParseInt(messageID, 10, 64)
+	if err == nil && rowID > 0 {
+		return rowID, true
+	}
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(messageID))
+	rowID = int64(hash.Sum64() & ((uint64(1) << 63) - 1))
+	if rowID == 0 {
+		rowID = 1
+	}
+	return rowID, true
+}
+
+func nullIfEmpty(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func stringValue(value any) string {

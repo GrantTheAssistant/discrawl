@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vincentkoc/crawlkit/tui"
+	"github.com/openclaw/crawlkit/tui"
 
 	"github.com/openclaw/discrawl/internal/store"
 )

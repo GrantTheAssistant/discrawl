@@ -35,7 +35,7 @@ discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git
 ```
 
-`discrawl update` forces the same pull/import step manually.
+`discrawl update` forces the same pull/import step manually. Snapshot imports are delta-planned from crawlkit shard fingerprints. Older manifests without those fields fall back to Git blob identity, so the common publish shape only imports the changed message tail shard plus small cursor tables. Unsafe table-shape changes still fall back to a full import.
 
 `discrawl sync` does **not** auto-import the share unless `--update=auto` or `--update=force` is provided, so routine live refreshes stay fast.
 
@@ -44,7 +44,7 @@ discrawl subscribe --no-auto-update https://github.com/example/discord-archive.g
 Keep normal Discord credentials configured **and** set `share.remote`:
 
 ```bash
-discrawl sync --update=auto       # import snapshot first, then live deltas
+discrawl sync --update=auto       # import snapshot delta first, then live deltas
 discrawl messages --sync          # blocking pre-query sync for matched scope
 discrawl sync --all-channels      # broader live repair
 discrawl sync --full              # historical backfill

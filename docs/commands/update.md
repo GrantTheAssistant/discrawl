@@ -2,6 +2,8 @@
 
 Forces a Git snapshot pull and import.
 
+Routine imports are delta-planned from crawlkit shard fingerprints, with a Git-object fallback for older manifests. The usual publish only imports changed tail shards; unsafe table changes fall back to a full import.
+
 ## Usage
 
 ```bash
@@ -19,7 +21,7 @@ discrawl update --with-embeddings
 
 ## When to use it
 
-- you have `share.remote` configured and want a fresh import before running a command that does not auto-update (`sync` does not auto-import unless `--update=auto` is passed)
+- you have `share.remote` configured and want a fresh shard-delta import before running a command that does not auto-update (`sync` does not auto-import unless `--update=auto` is passed)
 - you set `--no-auto-update` when subscribing and want to refresh on demand
 - a CI job already imported the latest snapshot but read commands still consider it stale
 

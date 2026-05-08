@@ -4,22 +4,35 @@
 
 ### Changes
 
-- Document the crawlkit-backed config/status/control, snapshot, mirror,
-  sync-state, output, and shared TUI surfaces now used on `main`.
-- Clarify that Discord bot sync, desktop wiretap parsing, DM privacy filters,
-  schema ownership, FTS/ranking, embeddings, and analytics remain app-owned.
-- Align terminal browser docs with the gitcrawl-style shared TUI model:
-  channel/person/thread groups, message rows, detail/thread panes, sorting,
-  mouse selection, right-click actions, and local/remote status chrome.
+- Added `discrawl tui`, a terminal archive browser for stored guild messages and local `@me` wiretap DMs using the shared crawlkit pane browser.
+- Added crawlkit-backed `metadata --json`, `status --json`, and `doctor --json` control surfaces for launchers, automation, and CI checks.
+- Published the generated documentation site at `discrawl.sh`, including command pages, install/setup docs, configuration, security notes, guides, a contact page, and social cards.
+- Moved the Go module and release metadata to `github.com/openclaw/discrawl`.
+
+### Fixes
+
+- Made the terminal browser more useful and accurate: default guild scoping, newest-message startup, compact panes, selected-message detail panes, count-header sorting, local/remote status labels, right-click actions, Discord message URLs, row labels, direct-message pane labels, mention rendering, inline mention resolution, attachment details, and reply-context hydration without broad thread scans.
+- Kept `tui --help`, status, and terminal-browser reads safe for fresh or missing local databases without triggering Git snapshot auto-update.
+- Kept local-only snapshot rows filtered during shared archive imports and forwarded snapshot import progress through the crawlkit import path.
+- Made stale Git snapshot imports plan shard deltas from crawlkit file fingerprints or Git object identity, so routine shared-archive refreshes import changed message tail shards instead of rebuilding every table and FTS index.
+- Included progress percentages in message-sync logs.
+- Fixed GoReleaser version stamping after the module path move.
+
+### Documentation
+
+- Documented the crawlkit-backed config/status/control, snapshot, mirror, sync-state, output, and shared TUI surfaces now used on `main`.
+- Clarified that Discord bot sync, desktop wiretap parsing, DM privacy filters, schema ownership, FTS/ranking, embeddings, and analytics remain app-owned.
+- Aligned terminal-browser docs with the gitcrawl-style shared TUI model: channel/person/thread groups, message rows, detail/thread panes, sorting, mouse selection, right-click actions, and local/remote status chrome.
+- Refreshed the repo-local `discrawl` agent skill for local Discord archive, freshness, query, boundary, TUI, verification, and read-only SQL workflows.
 
 ### Maintenance
 
-- Document the read-only `metadata --json`, `status --json`, and
-  `doctor --json` control surface for launchers, automation, and CI checks.
-- Refresh the repo-local `discrawl` agent skill for local Discord archive,
-  freshness, query, boundary, TUI, and verification workflows.
-- Document `discrawl sql` read-only query examples in the repo-local agent
-  skill so agents can do exact archive counts and rankings safely.
+- Migrated runtime paths, SQLite opening, archive mirror/export/import helpers, output/status wiring, and TUI plumbing onto the shared `crawlkit` infrastructure.
+- Updated crawlkit through `v0.4.1`, switched imports to `github.com/openclaw/crawlkit`, and added CI smoke coverage for the crawlkit control surface and merge behavior.
+- Added CodeQL, verified secret scanning, protected automation owners, stale issue automation, `.editorconfig`, and `.gitattributes`.
+- Added release workflow automation that dispatches the Homebrew tap formula update after GoReleaser publishes a tag.
+
+## 0.6.6 - 2026-05-05
 
 ### Fixes
 
@@ -45,24 +58,10 @@
 - Refreshed dependency and CI tooling pins, including GoReleaser, `go-toml`, golangci-lint, and gosec.
 - Tightened CI compatibility with the latest linters and made signal-cancellation and sync fixture tests deterministic under the race detector.
 
-### Fixes
-
-- Label direct-message TUI panes as direct messages instead of raw `@me` guild rows, keeping DM channel/person context readable.
-- Inherit shared crawlkit TUI improvements for newest-first startup, count-header sorting, selected-message-first chat detail panes, and gitcrawl-style metadata labels.
-- Surface Discord attachment filenames and extracted text in TUI detail panes instead of only showing `attachments=true`.
-
 ## 0.6.3 - 2026-05-01
 
-### Changes
-
-- Add crawlkit control metadata/status surfaces with `metadata --json`, `status --json`, and `doctor --json`.
-- Add `tap` and `cache-import` as public desktop-cache import names while keeping `wiretap` as a documented legacy alias.
-- Add `discrawl tui`, a terminal archive browser for stored guild messages and local `@me` wiretap DMs using the shared `crawlkit/tui` package.
-- Render TUI rows with compact panes and expose pinned, attachment, reply, channel, and author metadata in the detail pane.
-
 ### Fixes
 
-- Keep status and TUI reads safe for fresh or missing local databases without triggering git-share auto-update.
 - Added OS keyring fallback for Discord bot-token resolution, keeping env as the first source and documenting the default keyring item. (#17)
 - Clarified and locked down FTS query normalization so operator-like search terms such as `AND`, `OR`, `NOT`, `NEAR`, and `*` stay parameterized and quoted before SQLite `MATCH`. Thanks @mvanhorn.
 

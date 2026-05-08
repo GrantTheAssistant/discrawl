@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/openclaw/crawlkit/control"
 	"github.com/openclaw/discrawl/internal/config"
 	"github.com/openclaw/discrawl/internal/store"
-	"github.com/vincentkoc/crawlkit/control"
 )
 
 func (r *runtime) runMetadata(args []string) error {
