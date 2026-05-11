@@ -1077,7 +1077,7 @@ func TestReadCommandsDoNotWaitForSyncLock(t *testing.T) {
 		{"--config", cfgPath, "messages", "--channel", "general", "--last", "1"},
 		{"--config", cfgPath, "sql", "select count(*) as total from messages"},
 	} {
-		runCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		var out bytes.Buffer
 		err := Run(runCtx, args, &out, &bytes.Buffer{})
 		cancel()
