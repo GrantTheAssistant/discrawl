@@ -1,9 +1,10 @@
 # Changelog
 
-## 0.7.1 - Unreleased
+## 0.7.1 - 2026-05-11
 
 ### Changes
 
+- `discrawl publish` can now narrow Git snapshots with `--public-only`, `--include-channels`, and `--exclude-channels`, while the local archive can still sync from the full bot-visible dataset.
 - New installs now use OS-native config/runtime paths via crawlkit, while
   existing `~/.discrawl` installs keep working until users deliberately migrate.
 - Moved top-level CLI parsing onto Kong while preserving Discrawl's existing command dispatch and archive lock policy.

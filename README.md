@@ -480,6 +480,7 @@ Publisher:
 ```bash
 discrawl publish --remote https://github.com/example/discord-archive.git --push
 discrawl publish --readme path/to/discord-backup/README.md --push
+discrawl publish --public-only --include-channels 1458141495701012561 --push
 ```
 
 Subscriber:
@@ -503,7 +504,51 @@ Once `share.remote` is configured, read commands auto-fetch and import when the 
 
 Hybrid mode is supported too: keep normal Discord credentials configured and set `share.remote`. `discrawl sync --update=auto` and `discrawl messages --sync` import the Git snapshot first, usually as a changed-shard delta, then use live Discord for latest-message deltas. Use `sync --all-channels` or `sync --full` when you intentionally want a broader live repair/backfill pass.
 
-Git snapshots publish non-DM archive tables by default. Embedding queue state stays local to each machine, and Git-only readers can use FTS immediately without an embedding provider.
+Git snapshots publish non-DM archive tables by default. DMs, desktop wiretap
+rows, and local secrets are never exported.
+
+Publish filters narrow only the Git snapshot. The publisher can still sync and
+keep a richer local SQLite archive, then publish a smaller view for Git-only
+readers:
+
+```bash
+discrawl publish --public-only --push
+discrawl publish --include-channels 1458141495701012561 --push
+discrawl publish --public-only --include-channels 1458141495701012561 --push
+discrawl publish --exclude-channels 123456789012345678 --push
+```
+
+- `--public-only` keeps channels visible to the guild `@everyone` role after
+  category and channel permission overwrites. Private threads are excluded.
+- `--include-channels` exports only the listed channel ids. Including a forum
+  parent also includes its allowed public threads.
+- `--exclude-channels` omits listed channel ids and wins over includes.
+- Combining filters intersects them: `--public-only --include-channels A,B`
+  exports only included channels that are also public.
+
+The same defaults can live in config:
+
+```toml
+[share.filter]
+public_only = true
+include_channel_ids = ["1458141495701012561"]
+exclude_channel_ids = []
+```
+
+Filtered publishes also filter channel-scoped sync state, referenced member
+rows, attachments, mentions, events, and exported embedding vectors. They do
+not export share manifest state or guild-level member freshness markers, because
+those would describe the full archive rather than the filtered snapshot.
+
+Filtered publishes cannot use `--readme`, because report totals are computed
+from the full local archive. If a previous unfiltered publish committed a
+generated Discrawl `README.md` to the share repo, the next filtered publish
+removes that generated README before committing so stale full-archive totals are
+not carried forward. Custom README files without the Discrawl report markers are
+left alone.
+
+Embedding queue state stays local to each machine, and Git-only readers can use
+FTS immediately without an embedding provider.
 
 Generated vectors can be backed up explicitly:
 
@@ -513,7 +558,7 @@ discrawl subscribe --with-embeddings https://github.com/example/discord-archive.
 discrawl update --with-embeddings
 ```
 
-`--with-embeddings` exports stored `message_embeddings` rows for the configured `[search.embeddings]` provider/model plus the current input version. The snapshot stores those vectors under `embeddings/<provider>/<model>/<input_version>/...` and records that identity in `manifest.json`. Only vectors for non-DM messages are exported. Import only restores matching embedding manifests, so an Ollama/nomic subscriber does not accidentally import OpenAI/text-embedding vectors into semantic search. `embedding_jobs` is never exported; subscribers that want fresh local vectors can run `discrawl embed --rebuild` to create their own queue and vectors. Publishing without `--with-embeddings` omits embedding manifests instead of carrying forward an older bundle.
+`--with-embeddings` exports stored `message_embeddings` rows for the configured `[search.embeddings]` provider/model plus the current input version. The snapshot stores those vectors under `embeddings/<provider>/<model>/<input_version>/...` and records that identity in `manifest.json`. Only vectors for exported non-DM messages are included, so publish filters also filter embeddings. Import only restores matching embedding manifests, so an Ollama/nomic subscriber does not accidentally import OpenAI/text-embedding vectors into semantic search. `embedding_jobs` is never exported; subscribers that want fresh local vectors can run `discrawl embed --rebuild` to create their own queue and vectors. Publishing without `--with-embeddings` omits embedding manifests instead of carrying forward an older bundle.
 
 The Docker smoke test installs `discrawl` in a clean Go container, subscribes to a Git snapshot repo, then checks `search`, `messages`, `sql`, and `report`:
 
@@ -530,7 +575,10 @@ discrawl report
 discrawl report --readme path/to/discord-backup/README.md
 ```
 
-Every scheduled snapshot publish updates deterministic README stats: latest update time, latest archived message, archive totals, and day/week/month activity.
+Unfiltered scheduled snapshot publishes can update deterministic README stats:
+latest update time, latest archived message, archive totals, and day/week/month
+activity. Filtered publishes skip generated README reports to avoid leaking
+full-archive totals.
 
 The backup workflows restore and save `.discrawl-ci/discrawl.db` with `actions/cache`. On a warm runner cache, scheduled publishers skip the pre-sync snapshot import and go straight to the live latest-message delta before publishing. Cache misses still import the latest published snapshot first so `--latest-only` has channel cursors to resume from.
 

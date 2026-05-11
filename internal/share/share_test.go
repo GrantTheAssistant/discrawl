@@ -353,6 +353,91 @@ func TestSnapshotExcludesAndPreservesDirectMessages(t *testing.T) {
 	require.Equal(t, "0", rows[0][0])
 }
 
+func TestSnapshotFilterKeepsOnlyIncludedPublicChannels(t *testing.T) {
+	ctx := context.Background()
+	src, err := store.Open(ctx, filepath.Join(t.TempDir(), "src.db"))
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	require.NoError(t, src.UpsertGuild(ctx, store.GuildRecord{
+		ID:      "g1",
+		Name:    "Guild",
+		RawJSON: `{"roles":[{"id":"g1","permissions":"1024"}]}`,
+	}))
+	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "public", RawJSON: `{}`})
+	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "c2", GuildID: "g1", Kind: "text", Name: "private", RawJSON: `{"permission_overwrites":[{"id":"g1","type":0,"allow":"0","deny":"1024"}]}`})
+	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "cat1", GuildID: "g1", Kind: "category", Name: "private-category", RawJSON: `{"permission_overwrites":[{"id":"g1","type":0,"allow":"0","deny":"1024"}]}`})
+	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "c3", GuildID: "g1", ParentID: "cat1", Kind: "text", Name: "inherits-private", RawJSON: `{}`})
+	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "f1", GuildID: "g1", Kind: "forum", Name: "public-forum", RawJSON: `{}`})
+	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "t1", GuildID: "g1", ParentID: "f1", ThreadParentID: "f1", Kind: "thread_public", Name: "public-thread", RawJSON: `{}`})
+	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "tp1", GuildID: "g1", ParentID: "f1", ThreadParentID: "f1", Kind: "thread_private", Name: "private-thread", IsPrivateThread: true, RawJSON: `{}`})
+
+	for _, userID := range []string{"u1", "u2", "u3", "u4"} {
+		require.NoError(t, src.UpsertMember(ctx, store.MemberRecord{
+			GuildID:     "g1",
+			UserID:      userID,
+			Username:    userID,
+			RoleIDsJSON: `[]`,
+			RawJSON:     `{}`,
+		}))
+	}
+	upsertSnapshotFilterMessage(t, ctx, src, "m1", "c1", "u1", "public content")
+	upsertSnapshotFilterMessage(t, ctx, src, "m2", "c2", "u2", "private content")
+	upsertSnapshotFilterMessage(t, ctx, src, "m3", "c3", "u3", "category private content")
+	upsertSnapshotFilterMessage(t, ctx, src, "mt1", "t1", "u4", "thread content")
+	upsertSnapshotFilterMessage(t, ctx, src, "mtp1", "tp1", "u2", "private thread content")
+	require.NoError(t, src.SetSyncState(ctx, "channel:c1:latest_message_id", "m1"))
+	require.NoError(t, src.SetSyncState(ctx, "channel:c2:latest_message_id", "m2"))
+	require.NoError(t, src.SetSyncState(ctx, "guild:g1:members:last_success", time.Now().UTC().Format(time.RFC3339Nano)))
+	require.NoError(t, src.SetSyncState(ctx, "guild:g1:custom", "ok"))
+	require.NoError(t, src.SetSyncState(ctx, LastImportManifestJSONScope, `{"tables":[{"name":"messages","rows":999}],"leak":"private content"}`))
+
+	repo := filepath.Join(t.TempDir(), "share")
+	manifest, err := Export(ctx, src, Options{
+		RepoPath: repo,
+		Branch:   "main",
+		Filter: FilterOptions{
+			PublicOnly:        true,
+			IncludeChannelIDs: []string{"c1", "c2", "c3", "f1"},
+		},
+	})
+	require.NoError(t, err)
+
+	channelText := snapshotTableText(t, repo, tableEntry(t, manifest, "channels"))
+	require.Contains(t, channelText, `"id":"c1"`)
+	require.Contains(t, channelText, `"id":"f1"`)
+	require.Contains(t, channelText, `"id":"t1"`)
+	require.NotContains(t, channelText, `"id":"c2"`)
+	require.NotContains(t, channelText, `"id":"c3"`)
+	require.NotContains(t, channelText, `"id":"tp1"`)
+
+	messageText := snapshotTableText(t, repo, tableEntry(t, manifest, "messages"))
+	require.Contains(t, messageText, "public content")
+	require.Contains(t, messageText, "thread content")
+	require.NotContains(t, messageText, "private content")
+	require.NotContains(t, messageText, "category private content")
+	require.NotContains(t, messageText, "private thread content")
+
+	memberText := snapshotTableText(t, repo, tableEntry(t, manifest, "members"))
+	require.Contains(t, memberText, `"user_id":"u1"`)
+	require.Contains(t, memberText, `"user_id":"u4"`)
+	require.NotContains(t, memberText, `"user_id":"u2"`)
+	require.NotContains(t, memberText, `"user_id":"u3"`)
+
+	syncText := snapshotTableText(t, repo, tableEntry(t, manifest, "sync_state"))
+	require.Contains(t, syncText, "channel:c1:latest_message_id")
+	require.Contains(t, syncText, "guild:g1:custom")
+	require.NotContains(t, syncText, "channel:c2:latest_message_id")
+	require.NotContains(t, syncText, "guild:g1:members:last_success")
+	require.NotContains(t, syncText, "share:last_import_manifest_json")
+	require.NotContains(t, syncText, "private content")
+	require.NotContains(t, syncText, `"rows":999`)
+
+	_, rows, err := src.ReadOnlyQuery(ctx, "select count(*) from messages where content like '%private%'")
+	require.NoError(t, err)
+	require.Equal(t, "3", rows[0][0])
+}
+
 func TestExportImportEmbeddingsOptIn(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
@@ -1076,6 +1161,34 @@ func seedStore(t *testing.T, path string) *store.Store {
 		}},
 	}}))
 	return s
+}
+
+func upsertSnapshotFilterChannel(t *testing.T, ctx context.Context, s *store.Store, channel store.ChannelRecord) {
+	t.Helper()
+	require.NoError(t, s.UpsertChannel(ctx, channel))
+}
+
+func upsertSnapshotFilterMessage(t *testing.T, ctx context.Context, s *store.Store, id, channelID, authorID, content string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, s.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID:                id,
+			GuildID:           "g1",
+			ChannelID:         channelID,
+			ChannelName:       channelID,
+			AuthorID:          authorID,
+			AuthorName:        authorID,
+			MessageType:       0,
+			CreatedAt:         now,
+			Content:           content,
+			NormalizedContent: content,
+			RawJSON:           `{}`,
+		},
+		EventType:   "upsert",
+		PayloadJSON: `{"id":"` + id + `"}`,
+		Options:     store.WriteOptions{AppendEvent: true},
+	}}))
 }
 
 func seedDirectMessageData(t *testing.T, ctx context.Context, s *store.Store) {

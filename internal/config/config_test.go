@@ -28,6 +28,8 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	require.Equal(t, "fts", cfg.Search.DefaultMode)
 	require.Equal(t, "main", cfg.Share.Branch)
 	require.Equal(t, "15m", cfg.Share.StaleAfter)
+	require.Empty(t, cfg.Share.Filter.IncludeChannelIDs)
+	require.Empty(t, cfg.Share.Filter.ExcludeChannelIDs)
 	require.True(t, Default().Share.AutoUpdate)
 	require.False(t, cfg.ShareEnabled())
 	cfg.Share.Remote = "git@example.com:org/archive.git"
@@ -458,6 +460,11 @@ func TestEffectiveDefaultGuildAndDirs(t *testing.T) {
 
 	cfg := Default()
 	cfg.GuildIDs = []string{"g1"}
+	cfg.Share.Filter.IncludeChannelIDs = []string{" c1 ", "", "c2", "c1"}
+	cfg.Share.Filter.ExcludeChannelIDs = []string{" c3 ", "c3"}
+	require.NoError(t, cfg.Normalize())
+	require.Equal(t, []string{"c1", "c2"}, cfg.Share.Filter.IncludeChannelIDs)
+	require.Equal(t, []string{"c3"}, cfg.Share.Filter.ExcludeChannelIDs)
 	require.Equal(t, "g1", cfg.EffectiveDefaultGuildID())
 	require.Nil(t, cfg.SearchGuildDefaults())
 

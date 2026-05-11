@@ -59,7 +59,7 @@ discrawl subscribe --with-embeddings https://github.com/example/discord-archive.
 discrawl update --with-embeddings
 ```
 
-The snapshot stores vectors under `embeddings/<provider>/<model>/<input_version>/...` and records that identity in `manifest.json`. Only vectors for non-DM messages are exported. Import only restores matching embedding manifests, so an Ollama/nomic subscriber does not accidentally import OpenAI/text-embedding vectors. `embedding_jobs` is never exported; subscribers that want fresh local vectors run `discrawl embed --rebuild`. Publishing without `--with-embeddings` omits embedding manifests instead of carrying forward an older bundle.
+The snapshot stores vectors under `embeddings/<provider>/<model>/<input_version>/...` and records that identity in `manifest.json`. Only vectors for exported non-DM messages are included, so publish filters also filter embeddings. Import only restores matching embedding manifests, so an Ollama/nomic subscriber does not accidentally import OpenAI/text-embedding vectors. `embedding_jobs` is never exported; subscribers that want fresh local vectors run `discrawl embed --rebuild`. Publishing without `--with-embeddings` omits embedding manifests instead of carrying forward an older bundle.
 
 ## See also
 

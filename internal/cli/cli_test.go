@@ -740,6 +740,16 @@ func TestShareCommandsPublishSubscribeAndUpdate(t *testing.T) {
 	}, &out, &bytes.Buffer{}))
 	require.FileExists(t, filepath.Join(cfg.Share.RepoPath, share.ManifestName))
 	require.FileExists(t, filepath.Join(cfg.Share.RepoPath, "README.md"))
+	err := Run(ctx, []string{
+		"--config", cfgPath,
+		"publish",
+		"--repo", filepath.Join(dir, "filtered-share"),
+		"--public-only",
+		"--readme", filepath.Join(dir, "filtered-share", "README.md"),
+		"--no-commit",
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	require.Equal(t, 2, ExitCode(err))
+	require.ErrorContains(t, err, "publish --readme is not supported with share filters")
 
 	runGit(t, cfg.Share.RepoPath, "config", "user.name", "discrawl test")
 	runGit(t, cfg.Share.RepoPath, "config", "user.email", "discrawl@example.com")
@@ -769,6 +779,56 @@ func TestShareCommandsPublishSubscribeAndUpdate(t *testing.T) {
 	out.Reset()
 	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "search", "automatic"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "automatic updates work")
+}
+
+func TestFilteredPublishRemovesGeneratedReadme(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	remoteRepo := filepath.Join(dir, "remote.git")
+	runGit(t, dir, "init", "--bare", remoteRepo)
+
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "publisher.db")
+	cfg.Share.Remote = remoteRepo
+	cfg.Share.RepoPath = filepath.Join(dir, "publisher-share")
+	require.NoError(t, config.Write(cfgPath, cfg))
+	publisher := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, publisher.Close())
+
+	require.NoError(t, os.MkdirAll(cfg.Share.RepoPath, 0o755))
+	runGit(t, cfg.Share.RepoPath, "init")
+	runGit(t, cfg.Share.RepoPath, "checkout", "-B", "main")
+	runGit(t, cfg.Share.RepoPath, "config", "user.name", "discrawl test")
+	runGit(t, cfg.Share.RepoPath, "config", "user.email", "discrawl@example.com")
+	runGit(t, cfg.Share.RepoPath, "remote", "add", "origin", remoteRepo)
+
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath,
+		"publish",
+		"--repo", cfg.Share.RepoPath,
+		"--remote", remoteRepo,
+		"--readme", filepath.Join(cfg.Share.RepoPath, "README.md"),
+		"--push",
+	}, &bytes.Buffer{}, &bytes.Buffer{}))
+	require.FileExists(t, filepath.Join(cfg.Share.RepoPath, "README.md"))
+	out, err := exec.CommandContext(ctx, "git", "-C", cfg.Share.RepoPath, "ls-tree", "--name-only", "HEAD", "README.md").Output()
+	require.NoError(t, err)
+	require.Equal(t, "README.md\n", string(out))
+
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath,
+		"publish",
+		"--repo", cfg.Share.RepoPath,
+		"--remote", remoteRepo,
+		"--public-only",
+		"--push",
+		"--message", "test: filtered snapshot",
+	}, &bytes.Buffer{}, &bytes.Buffer{}))
+	require.NoFileExists(t, filepath.Join(cfg.Share.RepoPath, "README.md"))
+	out, err = exec.CommandContext(ctx, "git", "-C", cfg.Share.RepoPath, "ls-tree", "--name-only", "HEAD", "README.md").Output()
+	require.NoError(t, err)
+	require.Empty(t, string(out))
 }
 
 func TestShareCommandsRoundTripEmbeddings(t *testing.T) {

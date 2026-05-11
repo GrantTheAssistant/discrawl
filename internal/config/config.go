@@ -61,11 +61,18 @@ type SearchConfig struct {
 }
 
 type ShareConfig struct {
-	Remote     string `toml:"remote,omitempty"`
-	RepoPath   string `toml:"repo_path,omitempty"`
-	Branch     string `toml:"branch,omitempty"`
-	AutoUpdate bool   `toml:"auto_update"`
-	StaleAfter string `toml:"stale_after"`
+	Remote     string            `toml:"remote,omitempty"`
+	RepoPath   string            `toml:"repo_path,omitempty"`
+	Branch     string            `toml:"branch,omitempty"`
+	AutoUpdate bool              `toml:"auto_update"`
+	StaleAfter string            `toml:"stale_after"`
+	Filter     ShareFilterConfig `toml:"filter"`
+}
+
+type ShareFilterConfig struct {
+	PublicOnly        bool     `toml:"public_only"`
+	IncludeChannelIDs []string `toml:"include_channel_ids,omitempty"`
+	ExcludeChannelIDs []string `toml:"exclude_channel_ids,omitempty"`
 }
 
 type EmbeddingsConfig struct {
@@ -286,6 +293,8 @@ func (c *Config) Normalize() error {
 	if c.Share.StaleAfter == "" {
 		c.Share.StaleAfter = "15m"
 	}
+	c.Share.Filter.IncludeChannelIDs = uniqueStrings(c.Share.Filter.IncludeChannelIDs)
+	c.Share.Filter.ExcludeChannelIDs = uniqueStrings(c.Share.Filter.ExcludeChannelIDs)
 	if c.Search.Embeddings.MaxInputChars <= 0 {
 		c.Search.Embeddings.MaxInputChars = 12000
 	}

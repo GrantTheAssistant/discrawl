@@ -84,6 +84,11 @@ repo_path = "~/.local/share/discrawl/share" # macOS: "~/Library/Application Supp
 branch = "main"
 auto_update = true
 stale_after = "15m"
+
+[share.filter]
+public_only = false
+include_channel_ids = []
+exclude_channel_ids = []
 ```
 
 `concurrency` is auto-sized at `init` to `min(32, max(8, GOMAXPROCS*2))`.
@@ -113,3 +118,12 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - `guild_ids` is reserved for explicit multi-guild fan-out; usually you do not set this directly
 - changing `[search.embeddings]` provider/model/input version retargets pending jobs and resets prior attempts; existing vectors for another identity remain in SQLite but are not used for semantic search
 - changing `db_path` does not migrate existing data; copy the file yourself if you want to keep history
+- `[share.filter]` narrows only `publish` output; sync can still keep a richer local archive
+- `share.filter.public_only` exports only channels visible to the guild
+  `@everyone` role after category/channel permission overwrites; private
+  threads are excluded
+- `share.filter.include_channel_ids` and
+  `share.filter.exclude_channel_ids` accept Discord channel ids; exclusions win,
+  and including a forum parent also includes its allowed public threads
+- filtered publishes cannot write generated README reports, and remove older
+  generated Discrawl share READMEs before committing

@@ -5,6 +5,8 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/openclaw/discrawl/internal/config"
 	"github.com/openclaw/discrawl/internal/report"
@@ -23,6 +25,9 @@ func (r *runtime) runPublish(args []string) error {
 	noCommit := fs.Bool("no-commit", false, "")
 	push := fs.Bool("push", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
+	publicOnly := fs.Bool("public-only", r.cfg.Share.Filter.PublicOnly, "")
+	includeChannels := fs.String("include-channels", strings.Join(r.cfg.Share.Filter.IncludeChannelIDs, ","), "")
+	excludeChannels := fs.String("exclude-channels", strings.Join(r.cfg.Share.Filter.ExcludeChannelIDs, ","), "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
@@ -33,12 +38,25 @@ func (r *runtime) runPublish(args []string) error {
 	if err != nil {
 		return err
 	}
+	opts.Filter = share.FilterOptions{
+		PublicOnly:        *publicOnly,
+		IncludeChannelIDs: csvList(*includeChannels),
+		ExcludeChannelIDs: csvList(*excludeChannels),
+	}
+	if *readmePath != "" && opts.Filter.Active() {
+		return usageErr(errors.New("publish --readme is not supported with share filters; filtered report stats would otherwise leak the full archive"))
+	}
 	if *withEmbeddings {
 		applyEmbeddingShareOptions(&opts, r.cfg)
 	}
 	manifest, err := share.Export(r.ctx, r.store, opts)
 	if err != nil {
 		return err
+	}
+	if opts.Filter.Active() {
+		if err := removeGeneratedReadmeForFilteredPublish(opts.RepoPath); err != nil {
+			return err
+		}
 	}
 	if *readmePath != "" {
 		activity, err := report.Build(r.ctx, r.store, report.Options{})
@@ -82,6 +100,22 @@ func (r *runtime) runPublish(args []string) error {
 		"committed":    committed,
 		"pushed":       *push,
 	})
+}
+
+func removeGeneratedReadmeForFilteredPublish(repoPath string) error {
+	readmePath := filepath.Join(repoPath, "README.md")
+	body, err := os.ReadFile(readmePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	text := string(body)
+	if !strings.Contains(text, report.StartMarker) || !strings.Contains(text, report.EndMarker) {
+		return nil
+	}
+	return os.Remove(readmePath)
 }
 
 func (r *runtime) runSubscribe(args []string) error {

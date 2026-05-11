@@ -15,6 +15,33 @@ discrawl publish --readme path/to/discord-backup/README.md --push
 ```
 
 The publisher uses your existing bot-synced archive. It exports non-DM tables only.
+Use publish filters to share a narrower snapshot without narrowing the local
+archive:
+
+```bash
+discrawl publish --public-only --push
+discrawl publish --public-only --include-channels 1458141495701012561 --push
+```
+
+Filter rules:
+
+- `--public-only` keeps only channels where the guild `@everyone` role has
+  `VIEW_CHANNEL` after category and channel permission overwrites
+- private threads are excluded
+- `--include-channels` and `--exclude-channels` accept comma-separated channel
+  ids; exclusions win
+- including a forum parent also includes its allowed public threads
+- combined filters intersect, so `--public-only --include-channels A,B` exports
+  only included channels that are also public
+
+The publisher can keep syncing a richer local archive. Filters only narrow the
+Git snapshot seen by subscribers.
+
+Filtered publishes currently cannot use `--readme`, because report totals are
+computed from the full local archive. Filtered publishes also remove previously
+generated Discrawl `README.md` reports from the share repo before committing, so
+stale full-archive totals are not carried forward. Custom README files without
+Discrawl report markers are left alone.
 
 ## Subscriber
 
@@ -53,7 +80,12 @@ discrawl sync --full              # historical backfill
 ## What is published
 
 - non-DM archive tables (DM `@me` rows are always excluded)
-- README activity block - latest update time, latest archived message, archive totals, day/week/month activity
+- with publish filters: only matching channel-scoped rows, matching embedding
+  rows, and member rows referenced by matching messages
+- with publish filters: no share manifest state and no guild-level member
+  freshness markers, because those describe the full archive
+- without publish filters and with `--readme`: README activity block - latest
+  update time, latest archived message, archive totals, day/week/month activity
 - `embedding_jobs` is never exported
 
 ## Backing up vectors
