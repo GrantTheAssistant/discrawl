@@ -42,7 +42,7 @@ Attachment binaries are not stored in SQLite. Only attachment metadata, optional
 
 Set `sync.attachment_text = false` if you want to keep attachment metadata and filenames but disable attachment body fetches for text indexing.
 
-Git snapshots include cached non-DM media files by default. Use `publish --no-media` to omit them. `publish` exports only files already in the local cache; it does not fetch missing Discord media. DM media under `@me` stays local-only.
+Git snapshots include cached non-DM media files by default. Use `publish --no-media` to omit them. `publish` exports only files already in the local cache; it does not fetch missing Discord media. Published media is gzip-compressed under `media/`, while import still accepts older raw-media snapshots for backward compatibility. DM media under `@me` stays local-only.
 
 ## What is sent over the wire
 

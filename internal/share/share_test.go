@@ -100,7 +100,20 @@ func TestExportImportRestoresMediaFiles(t *testing.T) {
 	require.NotNil(t, manifest.Media)
 	require.Equal(t, 1, manifest.Media.Attachments)
 	require.Len(t, manifest.Media.Files, 1)
+	require.Equal(t, compressedMediaManifestPath(mediaPath), manifest.Media.Files[0].Path)
+	require.Equal(t, int64(len(body)), manifest.Media.Bytes)
 	require.FileExists(t, filepath.Join(repo, filepath.FromSlash(manifest.Media.Files[0].Path)))
+	_, err = os.Stat(filepath.Join(repo, "media", filepath.FromSlash(mediaPath)))
+	require.True(t, os.IsNotExist(err))
+	compressed, err := os.Open(filepath.Join(repo, filepath.FromSlash(manifest.Media.Files[0].Path)))
+	require.NoError(t, err)
+	gz, err := gzip.NewReader(compressed)
+	require.NoError(t, err)
+	restored, err := io.ReadAll(gz)
+	require.NoError(t, err)
+	require.NoError(t, gz.Close())
+	require.NoError(t, compressed.Close())
+	require.Equal(t, body, restored)
 
 	dst, err := store.Open(ctx, filepath.Join(dir, "dst.db"))
 	require.NoError(t, err)
@@ -128,6 +141,38 @@ func TestExportImportRestoresMediaFiles(t *testing.T) {
 	got, err = os.ReadFile(dstFile)
 	require.NoError(t, err)
 	require.Equal(t, body, got)
+}
+
+func TestExportMigratesLegacyRawMediaFilesToGzip(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	src := seedStore(t, filepath.Join(dir, "src.db"))
+	defer func() { _ = src.Close() }()
+	body := []byte("cached-media")
+	sum := sha256.Sum256(body)
+	hash := hex.EncodeToString(sum[:])
+	mediaPath := filepath.ToSlash(filepath.Join("attachments", hash[:2], hash+"-file.png"))
+	require.NoError(t, addCachedAttachment(ctx, src, mediaPath, hash, int64(len(body))))
+	srcCache := filepath.Join(dir, "src-cache")
+	srcFile, err := media.LocalPath(srcCache, mediaPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(srcFile), 0o755))
+	require.NoError(t, os.WriteFile(srcFile, body, 0o600))
+
+	repo := filepath.Join(dir, "share")
+	legacyRaw, err := media.RepoPath(repo, mediaPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(legacyRaw), 0o755))
+	require.NoError(t, os.WriteFile(legacyRaw, []byte("legacy raw media"), 0o600))
+
+	manifest, err := Export(ctx, src, Options{RepoPath: repo, CacheDir: srcCache, Branch: "main", IncludeMedia: true})
+	require.NoError(t, err)
+	require.NotNil(t, manifest.Media)
+	require.Len(t, manifest.Media.Files, 1)
+	require.Equal(t, compressedMediaManifestPath(mediaPath), manifest.Media.Files[0].Path)
+	_, err = os.Stat(legacyRaw)
+	require.True(t, os.IsNotExist(err))
+	require.FileExists(t, filepath.Join(repo, filepath.FromSlash(compressedMediaManifestPath(mediaPath))))
 }
 
 func TestExportRejectsOverlappingMediaRoots(t *testing.T) {
@@ -294,6 +339,32 @@ func TestImportMediaRejectsSymlinkedDirectories(t *testing.T) {
 	require.Contains(t, err.Error(), "symlinked path component")
 	_, err = os.Stat(filepath.Join(cacheDir, "media", filepath.FromSlash(mediaPath)))
 	require.True(t, os.IsNotExist(err))
+}
+
+func TestImportMediaSupportsLegacyRawManifestFiles(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "share")
+	cacheDir := filepath.Join(dir, "cache")
+	mediaPath := "attachments/aa/file.png"
+	body := []byte("legacy raw body")
+	source, err := media.RepoPath(repo, mediaPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(source), 0o755))
+	require.NoError(t, os.WriteFile(source, body, 0o600))
+	sum := sha256.Sum256(body)
+	hash := hex.EncodeToString(sum[:])
+
+	copied, err := importMedia(ctx, Options{RepoPath: repo, CacheDir: cacheDir}, &MediaManifest{
+		Files: []snapshot.FileManifest{{Path: "media/" + mediaPath, SHA256: hash}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, copied)
+	target, err := media.LocalPath(cacheDir, mediaPath)
+	require.NoError(t, err)
+	got, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, body, got)
 }
 
 func TestImportMediaRejectsInvalidAndMismatchedFiles(t *testing.T) {

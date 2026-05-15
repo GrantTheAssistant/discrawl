@@ -122,7 +122,7 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - changing `[search.embeddings]` provider/model/input version retargets pending jobs and resets prior attempts; existing vectors for another identity remain in SQLite but are not used for semantic search
 - changing `db_path` does not migrate existing data; copy the file yourself if you want to keep history
 - `sync.attachment_media = true` makes `sync` behave like `sync --with-media`; media bytes are cached under `cache_dir/media`, and CDN `404`/other fetch failures are recorded on attachment rows
-- `share.media = false` makes publish/update/auto-update omit or skip restoring cached media; `subscribe --no-media` writes this for Git-only readers. With the default `share.media = true`, publish/update include cached non-DM media, but publish does not fetch missing Discord files by itself.
+- `share.media = false` makes publish/update/auto-update omit or skip restoring cached media; `subscribe --no-media` writes this for Git-only readers. With the default `share.media = true`, publish/update include cached non-DM media as gzip-compressed snapshot files, but publish does not fetch missing Discord files by itself.
 - `[share.filter]` narrows only `publish` output; sync can still keep a richer local archive
 - `share.filter.public_only` exports only channels visible to the guild
   `@everyone` role after category/channel permission overwrites; private

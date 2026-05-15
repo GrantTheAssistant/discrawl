@@ -883,8 +883,8 @@ func exportMedia(ctx context.Context, db *sql.DB, opts Options, filter *snapshot
 	if strings.TrimSpace(opts.CacheDir) == "" {
 		return nil, nil
 	}
-	if err := os.RemoveAll(filepath.Join(opts.RepoPath, "media")); err != nil {
-		return nil, fmt.Errorf("reset media dir: %w", err)
+	if err := resetCompressedMediaExport(opts.RepoPath); err != nil {
+		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, `
 		select attachment_id, message_id, guild_id, channel_id, coalesce(media_path, ''), coalesce(content_sha256, '')
@@ -934,22 +934,30 @@ func exportMedia(ctx context.Context, db *sql.DB, opts Options, filter *snapshot
 		}
 		manifest.Attachments++
 		seen[mediaPath] = struct{}{}
-		rel := filepath.ToSlash(filepath.Join("media", mediaPath))
-		target, err := media.RepoPath(opts.RepoPath, mediaPath)
+		rel := compressedMediaManifestPath(mediaPath)
+		target, err := compressedMediaRepoPath(opts.RepoPath, mediaPath)
 		if err != nil {
 			return nil, err
 		}
-		if err := copyFile(target, source); err != nil {
-			return nil, fmt.Errorf("copy media %s: %w", mediaPath, err)
+		if err := copyGzipFile(target, source); err != nil {
+			return nil, fmt.Errorf("compress media %s: %w", mediaPath, err)
 		}
 		hash, err := fileSHA256(target)
 		if err != nil {
 			return nil, err
 		}
-		if expectedHash != "" && hash != expectedHash {
-			return nil, fmt.Errorf("media hash mismatch for %s: got %s want %s", mediaPath, hash, expectedHash)
+		sourceHash, err := fileSHA256(source)
+		if err != nil {
+			return nil, err
 		}
-		manifest.Files = append(manifest.Files, snapshot.FileManifest{Path: rel, Size: info.Size(), SHA256: hash})
+		if expectedHash != "" && sourceHash != expectedHash {
+			return nil, fmt.Errorf("media hash mismatch for %s: got %s want %s", mediaPath, sourceHash, expectedHash)
+		}
+		compressedInfo, err := os.Stat(target)
+		if err != nil {
+			return nil, fmt.Errorf("stat compressed media %s: %w", rel, err)
+		}
+		manifest.Files = append(manifest.Files, snapshot.FileManifest{Path: rel, Size: compressedInfo.Size(), SHA256: hash})
 		manifest.Bytes += info.Size()
 	}
 	if err := rows.Err(); err != nil {
@@ -959,6 +967,15 @@ func exportMedia(ctx context.Context, db *sql.DB, opts Options, filter *snapshot
 		return nil, nil
 	}
 	return manifest, nil
+}
+
+func resetCompressedMediaExport(repoPath string) error {
+	// A publish rewrites media from the local cache. Clearing the tree here is
+	// the forward migration from legacy raw media files to gzip-only snapshots.
+	if err := os.RemoveAll(filepath.Join(repoPath, "media")); err != nil {
+		return fmt.Errorf("reset media dir: %w", err)
+	}
+	return nil
 }
 
 func validateMediaRoots(opts Options) error {
@@ -1030,11 +1047,11 @@ func importMedia(ctx context.Context, opts Options, manifest *MediaManifest) (in
 		if err := ctx.Err(); err != nil {
 			return copied, err
 		}
-		mediaPath, ok := strings.CutPrefix(filepath.ToSlash(file.Path), "media/")
+		mediaPath, compressed, ok := mediaPathFromManifest(file.Path)
 		if !ok || strings.TrimSpace(mediaPath) == "" {
 			return copied, fmt.Errorf("invalid media manifest path %q", file.Path)
 		}
-		source, err := media.RepoPath(opts.RepoPath, mediaPath)
+		source, err := mediaSourcePath(opts.RepoPath, mediaPath, compressed)
 		if err != nil {
 			return copied, err
 		}
@@ -1059,15 +1076,53 @@ func importMedia(ctx context.Context, opts Options, manifest *MediaManifest) (in
 		if err != nil {
 			return copied, err
 		}
-		if sameFileHash(target, hash) {
+		targetHash := hash
+		if compressed {
+			targetHash, err = gzipFileSHA256(source)
+			if err != nil {
+				return copied, fmt.Errorf("hash compressed media %s: %w", file.Path, err)
+			}
+		}
+		if sameFileHash(target, targetHash) {
 			continue
 		}
-		if err := copyFile(target, source); err != nil {
+		if compressed {
+			err = restoreGzipFile(target, source)
+		} else {
+			err = copyFile(target, source)
+		}
+		if err != nil {
 			return copied, fmt.Errorf("restore media %s: %w", file.Path, err)
 		}
 		copied++
 	}
 	return copied, nil
+}
+
+func compressedMediaManifestPath(mediaPath string) string {
+	return filepath.ToSlash(filepath.Join("media", mediaPath+".gz"))
+}
+
+func mediaPathFromManifest(path string) (string, bool, bool) {
+	mediaPath, ok := strings.CutPrefix(filepath.ToSlash(path), "media/")
+	if !ok {
+		return "", false, false
+	}
+	if strings.HasSuffix(mediaPath, ".gz") {
+		return strings.TrimSuffix(mediaPath, ".gz"), true, true
+	}
+	return mediaPath, false, true
+}
+
+func compressedMediaRepoPath(repoPath, mediaPath string) (string, error) {
+	return media.RepoPath(repoPath, mediaPath+".gz")
+}
+
+func mediaSourcePath(repoPath, mediaPath string, compressed bool) (string, error) {
+	if compressed {
+		return compressedMediaRepoPath(repoPath, mediaPath)
+	}
+	return media.RepoPath(repoPath, mediaPath)
 }
 
 func regularMediaFile(root, path, label string) (os.FileInfo, error) {
@@ -1145,6 +1200,83 @@ func copyFile(target, source string) error {
 	return nil
 }
 
+func copyGzipFile(target, source string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	src, err := os.Open(source) // #nosec G304 -- source is constrained by media path helpers.
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".copy-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	gz, err := gzip.NewWriterLevel(tmp, gzip.BestCompression)
+	if err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if _, err := io.Copy(gz, src); err != nil {
+		_ = gz.Close()
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func restoreGzipFile(target, source string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	src, err := os.Open(source) // #nosec G304 -- source is constrained by media path helpers.
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	gz, err := gzip.NewReader(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = gz.Close() }()
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".copy-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := io.Copy(tmp, gz); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
 func fileSHA256(path string) (string, error) {
 	file, err := os.Open(path) // #nosec G304 -- callers pass confined repo/cache paths.
 	if err != nil {
@@ -1153,6 +1285,24 @@ func fileSHA256(path string) (string, error) {
 	defer func() { _ = file.Close() }()
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func gzipFileSHA256(path string) (string, error) {
+	file, err := os.Open(path) // #nosec G304 -- callers pass confined repo/cache paths.
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = gz.Close() }()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, gz); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil

@@ -80,8 +80,8 @@ discrawl sync --full              # historical backfill
 ## What is published
 
 - non-DM archive tables (DM `@me` rows are always excluded)
-- cached non-DM attachment media by default; use `publish --no-media` to omit
-  files that are already in `cache_dir/media`
+- cached non-DM attachment media as gzip-compressed files by default; use
+  `publish --no-media` to omit files that are already in `cache_dir/media`
 - with publish filters: only matching channel-scoped rows, matching embedding
   rows, and member rows referenced by matching messages
 - with publish filters: no share manifest state and no guild-level member
@@ -101,10 +101,14 @@ discrawl publish --push
 
 `sync --with-media` and `attachments fetch` download Discord attachment bytes
 into `cache_dir/media`. `publish --push` then exports cached non-DM media into
-the Git snapshot repo. `publish` does not fetch missing Discord files itself,
-so scheduled Git backups that should include media must fetch media before
-publishing. Set `sync.attachment_media = true` for scheduled sync jobs and leave
-`share.media = true` to include cached media in publish/update flows.
+the Git snapshot repo as gzip-compressed `media/...gz` files. Imports restore
+those files back into the raw local cache layout. Older snapshots that contain
+raw `media/...` files still import; the next media publish clears the legacy
+media tree and rewrites it in gzip form. `publish` does not fetch missing
+Discord files itself, so scheduled Git backups that should include media must
+fetch media before publishing. Set `sync.attachment_media = true` for scheduled
+sync jobs and leave `share.media = true` to include cached media in
+publish/update flows.
 
 Discord CDN URLs can expire or be removed. Those fetches are stored as failed
 with their HTTP status, commonly `404`; this does not block publishing files

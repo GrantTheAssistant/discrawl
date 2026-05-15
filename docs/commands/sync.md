@@ -68,7 +68,7 @@ discrawl sync --with-media
 
 - `--latest-only` is the default for untargeted `sync`. Use `--all-channels` to opt out without doing a full historical crawl.
 - `--with-media` records expired or removed Discord CDN URLs as failed fetches with the HTTP status, commonly `404`.
-- `--with-media` updates the local cache only; run `publish --push` afterward to include cached non-DM media in the Git backup.
+- `--with-media` updates the local cache only; run `publish --push` afterward to include cached non-DM media in the Git backup as gzip-compressed files.
 - `--since` does not mark older history as complete, so a later `sync --full` without `--since` can continue the backfill.
 - Long runs emit periodic progress logs to stderr.
 - Heartbeat logs (`message sync waiting`) name the oldest active channel and per-channel page activity if in-flight channels stop completing for a while.

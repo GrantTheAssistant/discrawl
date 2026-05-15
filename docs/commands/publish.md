@@ -60,7 +60,7 @@ README files without Discrawl report markers are left alone.
 ## What is published
 
 - non-DM archive tables (DM `@me` rows are always excluded)
-- cached non-DM attachment media files under `media/` unless `--no-media` is used
+- cached non-DM attachment media files under `media/` as gzip-compressed files unless `--no-media` is used
 - when filters are enabled: only matching guilds, channels, messages, events,
   attachments, mentions, channel-scoped sync-state rows, member rows referenced
   by matching messages, and matching embedding rows
@@ -82,6 +82,10 @@ attachment bytes. Run `discrawl sync --with-media` or `discrawl attachments
 fetch` before publishing when the Git snapshot should include newly discovered
 media. Scheduled publishers can set `sync.attachment_media = true` and leave
 `share.media = true`, the default.
+
+Media snapshots are gzip-only on publish. Legacy snapshots that stored raw
+`media/...` files remain importable for backward compatibility, and the next
+media publish rewrites the media tree as `media/...gz`.
 
 ## See also
 

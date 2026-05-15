@@ -38,8 +38,8 @@ discrawl --json attachments --missing --all
 - media bytes are stored under `cache_dir/media`, not in SQLite
 - SQLite stores attachment metadata, content hash, cached media path, fetch status, and errors
 - Discord CDN URLs can expire or be removed; those fetches are recorded as failed with their HTTP status, commonly `404`
-- `attachments fetch` only populates the local cache; run `publish --push` afterward to copy cached non-DM media into the Git snapshot repo
-- `publish` backs up cached non-DM media files by default; use `publish --no-media` to omit them
+- `attachments fetch` only populates the local cache; run `publish --push` afterward to copy cached non-DM media into the Git snapshot repo as gzip-compressed files
+- `publish` backs up cached non-DM media files by default and migrates older raw snapshot media to gzip form; use `publish --no-media` to omit them
 - `@me` DM media is local-only and is not published to Git snapshots
 
 ## See also

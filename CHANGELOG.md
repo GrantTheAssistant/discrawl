@@ -4,6 +4,8 @@
 
 ### Changes
 
+- Media-enabled `discrawl publish` now migrates shared attachment media to gzip-compressed files while still importing older raw-media snapshots.
+
 ### Fixes
 
 ## 0.8.0 - 2026-05-15

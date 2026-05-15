@@ -530,7 +530,7 @@ Once `share.remote` is configured, read commands auto-fetch and import when the 
 
 Hybrid mode is supported too: keep normal Discord credentials configured and set `share.remote`. `discrawl sync --update=auto` and `discrawl messages --sync` import the Git snapshot first, usually as a changed-shard delta, then use live Discord for latest-message deltas. Use `sync --all-channels` or `sync --full` when you intentionally want a broader live repair/backfill pass.
 
-Git snapshots publish non-DM archive tables and cached non-DM attachment media by default. DMs, desktop wiretap rows, DM media, and local secrets are never exported. Use `publish --no-media` to omit cached media files.
+Git snapshots publish non-DM archive tables and cached non-DM attachment media by default. Cached media is written as gzip-compressed files under `media/` and restored to raw local cache files on import. Older snapshots that contain raw media files still import, and the next media-enabled `publish` rewrites the media tree into gzip form. DMs, desktop wiretap rows, DM media, and local secrets are never exported. Use `publish --no-media` to omit cached media files.
 Subscribers can use `subscribe --no-media` or `update --no-media` to import only SQLite rows and skip restoring cached files.
 
 Media backup is a two-step publisher workflow: first fetch bytes with `discrawl sync --with-media` or `discrawl attachments fetch`, then publish with `discrawl publish --push`. Scheduled publishers that should include media can set `sync.attachment_media = true` and leave `share.media = true`, which is the default. `publish` never downloads missing Discord files by itself; it exports only media already present in the local cache.

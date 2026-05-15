@@ -7,7 +7,7 @@ Mirror Discord guilds into local SQLite. Search server history without depending
 - discovers every guild a bot can access and syncs channels, threads, members, and message history into SQLite
 - maintains FTS5 indexes for fast literal search; optional embeddings for semantic and hybrid recall
 - imports classifiable Discord Desktop cache messages with `wiretap`, including proven DMs under `@me`
-- downloads attachment media into the local cache and includes cached non-DM media in Git snapshots
+- downloads attachment media into the local cache and includes cached non-DM media as gzip-compressed Git snapshot files
 - tails the Gateway for live updates with periodic repair sweeps
 - publishes the archive as sharded NDJSON snapshots in a private Git repo so readers can search offline with no Discord credentials
 - exposes read-only SQL, channel/member directories, mention queries, digests, and trend analytics
