@@ -1727,6 +1727,8 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(t, "_", safePathSegment(" "))
+	require.Equal(t, "_", safePathSegment("."))
+	require.Equal(t, "_", safePathSegment(".."))
 	require.Equal(t, "OpenAI_compatible-v1.2", safePathSegment("OpenAI compatible-v1.2"))
 	require.Equal(t, `"weird""table"`, quoteIdent(`weird"table`))
 	require.Equal(t, `insert into "messages"("id","weird""column") values(?,?)`, insertSQL("messages", []string{"id", `weird"column`}))
@@ -1917,6 +1919,70 @@ func TestLegacyManifestFileImportAndEmbeddingDecodeErrors(t *testing.T) {
 		InputVersion: store.EmbeddingInputVersion,
 		Files:        []string{embeddingRel},
 	}}), "decode embedding blob")
+	require.NoError(t, tx.Rollback())
+}
+
+func TestImportEmbeddingsRejectsUnsafeManifestFiles(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	repo := t.TempDir()
+	for _, rel := range []string{
+		"../escape.jsonl.gz",
+		filepath.ToSlash(filepath.Join("tables", "messages", "000001.jsonl.gz")),
+		filepath.ToSlash(filepath.Join("embeddings", "openai", "model", "000001.jsonl")),
+	} {
+		tx, err := s.DB().BeginTx(ctx, nil)
+		require.NoError(t, err)
+		require.ErrorContains(t, importEmbeddings(ctx, tx, Options{
+			RepoPath:              repo,
+			EmbeddingProvider:     "openai",
+			EmbeddingModel:        "model",
+			EmbeddingInputVersion: store.EmbeddingInputVersion,
+		}, []EmbeddingManifest{{
+			Provider:     "openai",
+			Model:        "model",
+			InputVersion: store.EmbeddingInputVersion,
+			Files:        []string{rel},
+		}}), "invalid embedding manifest path")
+		require.NoError(t, tx.Rollback())
+	}
+}
+
+func TestImportEmbeddingsBoundsDecompressedInput(t *testing.T) {
+	oldLimit := maxSharedEmbeddingDecompressedBytes
+	maxSharedEmbeddingDecompressedBytes = 32
+	t.Cleanup(func() { maxSharedEmbeddingDecompressedBytes = oldLimit })
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	repo := t.TempDir()
+	embeddingRel := filepath.ToSlash(filepath.Join("embeddings", "openai", "model", "000001.jsonl.gz"))
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "embeddings", "openai", "model"), 0o755))
+	writeGzipJSONLines(t, filepath.Join(repo, filepath.FromSlash(embeddingRel)), []string{
+		`{"message_id":"m1","provider":"openai","model":"model","input_version":"` + store.EmbeddingInputVersion + `","dimensions":2,"embedding_blob":"AAAA","embedded_at":"2026-04-22T12:00:00Z"}`,
+	})
+
+	tx, err := s.DB().BeginTx(ctx, nil)
+	require.NoError(t, err)
+	require.ErrorContains(t, importEmbeddings(ctx, tx, Options{
+		RepoPath:              repo,
+		EmbeddingProvider:     "openai",
+		EmbeddingModel:        "model",
+		EmbeddingInputVersion: store.EmbeddingInputVersion,
+	}, []EmbeddingManifest{{
+		Provider:     "openai",
+		Model:        "model",
+		InputVersion: store.EmbeddingInputVersion,
+		Files:        []string{embeddingRel},
+	}}), "embedding decompressed size exceeds")
 	require.NoError(t, tx.Rollback())
 }
 

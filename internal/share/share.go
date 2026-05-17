@@ -48,6 +48,10 @@ var maxShardBytes int64 = 40 * 1024 * 1024
 // restore/hash paths bounded so a malformed snapshot cannot expand forever.
 var maxSharedMediaDecompressedBytes int64 = 1 << 30
 
+// Embedding snapshots are gzip-compressed JSONL. Bound decompression so a
+// malformed snapshot cannot force unbounded JSON decoder reads.
+var maxSharedEmbeddingDecompressedBytes int64 = 1 << 30
+
 var SnapshotTables = []string{
 	"guilds",
 	"channels",
@@ -1130,24 +1134,28 @@ func mediaSourcePath(repoPath, mediaPath string, compressed bool) (string, error
 }
 
 func regularMediaFile(root, path, label string) (os.FileInfo, error) {
+	return regularFileInRoot(root, path, label, "media")
+}
+
+func regularFileInRoot(root, path, label, kind string) (os.FileInfo, error) {
 	root = filepath.Clean(root)
 	path = filepath.Clean(path)
 	rel, err := filepath.Rel(root, path)
 	if err != nil || rel == "." || rel == "" || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return nil, fmt.Errorf("%w: media %s escapes media root", errUnsafeMediaPath, label)
+		return nil, fmt.Errorf("%w: %s %s escapes %s root", errUnsafeMediaPath, kind, label, kind)
 	}
 	rootInfo, err := os.Lstat(root)
 	if err != nil {
 		return nil, err
 	}
 	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
-		return nil, fmt.Errorf("%w: media root for %s is not a directory", errUnsafeMediaPath, label)
+		return nil, fmt.Errorf("%w: %s root for %s is not a directory", errUnsafeMediaPath, kind, label)
 	}
 	current := root
 	parts := strings.Split(rel, string(filepath.Separator))
 	for i, part := range parts {
 		if part == "" || part == "." || part == ".." {
-			return nil, fmt.Errorf("%w: invalid media path %q", errUnsafeMediaPath, label)
+			return nil, fmt.Errorf("%w: invalid %s path %q", errUnsafeMediaPath, kind, label)
 		}
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
@@ -1156,22 +1164,22 @@ func regularMediaFile(root, path, label string) (os.FileInfo, error) {
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			if i == len(parts)-1 {
-				return nil, fmt.Errorf("%w: media %s is not a regular file", errUnsafeMediaPath, label)
+				return nil, fmt.Errorf("%w: %s %s is not a regular file", errUnsafeMediaPath, kind, label)
 			}
-			return nil, fmt.Errorf("%w: media %s contains symlinked path component", errUnsafeMediaPath, label)
+			return nil, fmt.Errorf("%w: %s %s contains symlinked path component", errUnsafeMediaPath, kind, label)
 		}
 		if i < len(parts)-1 {
 			if !info.IsDir() {
-				return nil, fmt.Errorf("%w: media %s parent is not a directory", errUnsafeMediaPath, label)
+				return nil, fmt.Errorf("%w: %s %s parent is not a directory", errUnsafeMediaPath, kind, label)
 			}
 			continue
 		}
 		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("%w: media %s is not a regular file", errUnsafeMediaPath, label)
+			return nil, fmt.Errorf("%w: %s %s is not a regular file", errUnsafeMediaPath, kind, label)
 		}
 		return info, nil
 	}
-	return nil, fmt.Errorf("%w: invalid media path %q", errUnsafeMediaPath, label)
+	return nil, fmt.Errorf("%w: invalid %s path %q", errUnsafeMediaPath, kind, label)
 }
 
 func copyFile(target, source string) error {
@@ -1289,6 +1297,32 @@ func copyWithLimit(dst io.Writer, src io.Reader, limit int64) error {
 		return fmt.Errorf("media decompressed size exceeds %d bytes", limit)
 	}
 	return nil
+}
+
+type limitedReader struct {
+	r     io.Reader
+	limit int64
+	n     int64
+	label string
+}
+
+func (r *limitedReader) Read(p []byte) (int, error) {
+	if r.limit <= 0 {
+		return 0, fmt.Errorf("%s decompression limit must be positive", r.label)
+	}
+	remaining := r.limit + 1 - r.n
+	if remaining <= 0 {
+		return 0, fmt.Errorf("%s decompressed size exceeds %d bytes", r.label, r.limit)
+	}
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err := r.r.Read(p)
+	r.n += int64(n)
+	if r.n > r.limit {
+		return n, fmt.Errorf("%s decompressed size exceeds %d bytes", r.label, r.limit)
+	}
+	return n, err
 }
 
 func sameFileHash(path, hash string) bool {
@@ -1899,8 +1933,14 @@ func importEmbeddings(ctx context.Context, tx *sql.Tx, opts Options, manifests [
 }
 
 func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel string) error {
-	path := filepath.Join(repoPath, filepath.FromSlash(rel))
-	file, err := os.Open(path)
+	path, err := embeddingRepoPath(repoPath, rel)
+	if err != nil {
+		return err
+	}
+	if _, err := regularFileInRoot(filepath.Join(repoPath, "embeddings"), path, rel, "embedding"); err != nil {
+		return err
+	}
+	file, err := os.Open(path) // #nosec G304 -- path is confined by embeddingRepoPath and regularFileInRoot.
 	if err != nil {
 		return fmt.Errorf("open %s: %w", rel, err)
 	}
@@ -1910,7 +1950,11 @@ func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel stri
 		return fmt.Errorf("read gzip %s: %w", rel, err)
 	}
 	defer func() { _ = gz.Close() }()
-	dec := json.NewDecoder(gz)
+	dec := json.NewDecoder(&limitedReader{
+		r:     gz,
+		limit: maxSharedEmbeddingDecompressedBytes,
+		label: "embedding",
+	})
 	dec.UseNumber()
 	for {
 		if err := ctx.Err(); err != nil {
@@ -1945,6 +1989,20 @@ func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel stri
 		}
 	}
 	return nil
+}
+
+func embeddingRepoPath(repoPath, rel string) (string, error) {
+	raw := strings.TrimSpace(rel)
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(raw)))
+	switch {
+	case raw == "", clean == ".", filepath.IsAbs(filepath.FromSlash(raw)), strings.HasPrefix(clean, "../"), clean == "..":
+		return "", fmt.Errorf("invalid embedding manifest path %q", rel)
+	case !strings.HasPrefix(clean, "embeddings/"):
+		return "", fmt.Errorf("invalid embedding manifest path %q: must be under embeddings/", rel)
+	case !strings.HasSuffix(clean, ".jsonl.gz"):
+		return "", fmt.Errorf("invalid embedding manifest path %q: must end in .jsonl.gz", rel)
+	}
+	return filepath.Join(repoPath, filepath.FromSlash(clean)), nil
 }
 
 func embeddingManifestMatches(opts Options, manifest EmbeddingManifest) bool {
@@ -2316,7 +2374,11 @@ func safePathSegment(s string) string {
 			b.WriteRune('_')
 		}
 	}
-	return b.String()
+	clean := b.String()
+	if clean == "." || clean == ".." {
+		return "_"
+	}
+	return clean
 }
 
 func run(ctx context.Context, dir, name string, args ...string) error {
