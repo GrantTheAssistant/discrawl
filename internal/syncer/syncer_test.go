@@ -31,6 +31,8 @@ type fakeClient struct {
 	messages         map[string][]*discordgo.Message
 	messageErrors    map[string]error
 	messageCalls     map[string]int
+	messageBlocks    map[string]chan struct{}
+	messageStarted   chan string
 	beforeErrors     map[string]map[string]error
 	memberDelay      time.Duration
 	tailCalls        int
@@ -121,6 +123,19 @@ func (f *fakeClient) ChannelMessages(ctx context.Context, channelID string, limi
 	}
 	f.messageCalls[channelID]++
 	f.mu.Unlock()
+	if f.messageStarted != nil {
+		select {
+		case f.messageStarted <- channelID:
+		default:
+		}
+	}
+	if block := f.messageBlocks[channelID]; block != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-block:
+		}
+	}
 	if err := f.messageErrors[channelID]; err != nil {
 		return nil, err
 	}

@@ -115,8 +115,8 @@ func (s *Syncer) syncMessageChannelsConcurrent(
 		skipped   error
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancelAll := context.WithCancel(ctx)
+	defer cancelAll()
 
 	jobs := make(chan *discordgo.Channel)
 	results := make(chan result, len(channels))
@@ -129,9 +129,9 @@ func (s *Syncer) syncMessageChannelsConcurrent(
 					return
 				}
 				progress.start(channel)
-				channelCtx, cancel := s.messageChannelContext(ctx)
+				channelCtx, cancelChannel := s.messageChannelContext(ctx)
 				count, err := s.syncChannelMessages(channelCtx, guildID, channel, opts.Full, opts.Embeddings, opts.Since, opts.LatestOnly, progress)
-				cancel()
+				cancelChannel()
 				succeeded := err == nil
 				var skipped error
 				if err != nil && s.skipSyncError(ctx, channel, err) {
@@ -147,7 +147,7 @@ func (s *Syncer) syncMessageChannelsConcurrent(
 					return
 				}
 				if err != nil {
-					cancel()
+					cancelAll()
 					return
 				}
 			}

@@ -187,7 +187,7 @@ func TestMessageChannelConcurrentErrorAndProgressBranches(t *testing.T) {
 	svc := New(client, s, slog.New(slog.DiscardHandler))
 	count, err := svc.syncMessageChannelsConcurrent(ctx, "g1", channels, SyncOptions{Full: true}, 2, newMessageSyncProgress(svc, "g1", len(channels), SyncOptions{Full: true, Concurrency: 2}))
 	require.ErrorContains(t, err, "sync channel c2")
-	require.Equal(t, 1, count)
+	require.LessOrEqual(t, count, 1)
 
 	progress := &messageSyncProgress{}
 	progress.start(nil)
@@ -195,6 +195,66 @@ func TestMessageChannelConcurrentErrorAndProgressBranches(t *testing.T) {
 	progress.finish(nil)
 	progress.logWaitHeartbeat()
 	require.Equal(t, "skipped", syncErrorOutcome(errors.New("plain")))
+}
+
+func TestMessageChannelConcurrentFatalErrorCancelsPeers(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	channels := []*discordgo.Channel{
+		{ID: "slow", GuildID: "g1", Name: "slow", Type: discordgo.ChannelTypeGuildText},
+		{ID: "err", GuildID: "g1", Name: "err", Type: discordgo.ChannelTypeGuildText},
+	}
+	slowBlock := make(chan struct{})
+	errBlock := make(chan struct{})
+	started := make(chan string, 2)
+	client := &fakeClient{
+		messageBlocks:  map[string]chan struct{}{"slow": slowBlock, "err": errBlock},
+		messageStarted: started,
+		messageErrors:  map[string]error{"err": errors.New("hard failure")},
+	}
+	svc := New(client, s, slog.New(slog.DiscardHandler))
+
+	done := make(chan struct {
+		count int
+		err   error
+	}, 1)
+	go func() {
+		count, err := svc.syncMessageChannelsConcurrent(ctx, "g1", channels, SyncOptions{Full: true}, 2, nil)
+		done <- struct {
+			count int
+			err   error
+		}{count: count, err: err}
+	}()
+
+	seen := map[string]struct{}{}
+	deadline := time.After(time.Second)
+	for len(seen) < 2 {
+		select {
+		case channelID := <-started:
+			seen[channelID] = struct{}{}
+		case <-deadline:
+			t.Fatalf("timed out waiting for concurrent channel starts; saw %v", seen)
+		}
+	}
+	require.Contains(t, seen, "slow")
+	require.Contains(t, seen, "err")
+	close(errBlock)
+
+	result := <-done
+	count, err := result.count, result.err
+	require.ErrorContains(t, err, "sync channel err")
+	require.Zero(t, count)
+	require.NoError(t, ctx.Err())
+	client.mu.Lock()
+	slowCalls := client.messageCalls["slow"]
+	client.mu.Unlock()
+	require.Equal(t, 1, slowCalls)
 }
 
 func channelIDs(channels []*discordgo.Channel) []string {
