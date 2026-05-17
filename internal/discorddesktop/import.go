@@ -456,7 +456,7 @@ func discoverCandidates(ctx context.Context, root string, rootFS *os.Root, opts 
 		}
 		if candidate.source == fileSourceCacheData {
 			if previous, ok := state.previous[relKey]; ok && sameFileFingerprint(previous, fingerprint) {
-				if !opts.FullCache || isImportedFingerprint(previous) {
+				if isImportedFingerprint(previous) {
 					state.current[relKey] = previous
 					stats.FilesUnchanged++
 					return nil

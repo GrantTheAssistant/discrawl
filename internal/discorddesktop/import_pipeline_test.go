@@ -40,8 +40,8 @@ func TestImportFastCacheSkipsUnroutedCacheDataUnlessFullCache(t *testing.T) {
 	stats, err = Import(ctx, fastStore, Options{Path: dir})
 	require.NoError(t, err)
 	require.Equal(t, 0, stats.FilesScanned)
-	require.Equal(t, 0, stats.CacheFilesFastSkipped)
-	require.Equal(t, 1, stats.FilesUnchanged)
+	require.Equal(t, 1, stats.CacheFilesFastSkipped)
+	require.Equal(t, 0, stats.FilesUnchanged)
 
 	stats, err = Import(ctx, fastStore, Options{Path: dir, FullCache: true})
 	require.NoError(t, err)
