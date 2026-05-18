@@ -134,7 +134,7 @@ discrawl check-update
 ```
 
 Interactive terminal runs also perform a cached daily release check and print a
-stderr notice when a newer OpenClaw release is available. Set
+stderr notice when a newer Discrawl release is available. Set
 `DISCRAWL_NO_UPDATE_CHECK=1` or `CRAWLKIT_NO_UPDATE_CHECK=1` to disable that
 passive notice.
 

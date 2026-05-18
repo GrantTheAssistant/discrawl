@@ -4,8 +4,7 @@
 
 ### Changes
 
-- Add cached release checks with `discrawl check-update` and passive terminal
-  notices when a newer OpenClaw release is available.
+- Add cached release checks with `discrawl check-update` and passive terminal notices when a newer Discrawl release is available.
 
 ### Fixes
 
