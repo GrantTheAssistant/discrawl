@@ -2,6 +2,10 @@
 /.github/CODEOWNERS @openclaw/openclaw-secops
 /.github/dependabot.yml @openclaw/openclaw-secops
 /.github/workflows/ @openclaw/openclaw-secops
+/.agents/skills/ @openclaw/openclaw-secops
+/.crabbox.yaml @openclaw/openclaw-secops
+/AGENTS.md @openclaw/openclaw-secops
+/SECURITY.md @openclaw/openclaw-secops
 
 # Release, backup, and package integrity surfaces.
 /.goreleaser.yaml @openclaw/openclaw-secops
