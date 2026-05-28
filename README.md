@@ -1,6 +1,6 @@
-![discrawl banner](docs/assets/readme-banner.jpg)
-
 # discrawl 🛰️ — Mirror Discord into SQLite; search server history locally
+
+![discrawl banner](docs/assets/readme-banner.jpg)
 
 `discrawl` mirrors Discord guild data into local SQLite so you can search, inspect, and query server history without depending on Discord search. It can also import classifiable Discord Desktop cache messages for local DM recovery/search without using a user token. Teams can publish the guild archive as a private Git snapshot repo, so readers get fresh org memory without Discord bot credentials. Read-only Cloudflare remote archives can be configured without creating a local SQLite database.
 
