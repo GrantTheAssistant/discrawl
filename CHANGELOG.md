@@ -4,6 +4,9 @@
 
 ### Changes
 
+- Add optional `turbovec` semantic-search scoring via
+  `[search.embeddings].vector_backend`, while keeping exact cosine as the
+  default backend.
 - Added the Homebrew install command to the `discrawl.sh` landing hero and agent docs index, with a one-row desktop layout and copy button.
 - Update `crawlkit` to v0.10.0.
 - Add read-only Cloudflare remote archive scaffolding with `[remote]` config,
