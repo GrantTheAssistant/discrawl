@@ -268,7 +268,7 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "candidate vector is zero") {
-			return nil, fmt.Errorf("score embedding: stored embedding vector is zero")
+			return nil, errors.New("score embedding: stored embedding vector is zero")
 		}
 		return nil, fmt.Errorf("score embeddings: %w", err)
 	}
