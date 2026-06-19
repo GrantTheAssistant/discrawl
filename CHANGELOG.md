@@ -4,6 +4,8 @@
 
 ### Changes
 
+- Expose the release changelog directly in the documentation site navigation. Thanks @joshka.
+
 ### Fixes
 
 - Keep incremental share imports compatible with crawlkit's safe changed-tail replacement plan instead of falling back to a full archive rebuild.
