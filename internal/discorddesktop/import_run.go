@@ -97,8 +97,9 @@ func (r *importRun) retryPending() error {
 	if err := scanCandidates(r.ctx, r.rootFS, r.opts, r.pending, retry, r.channelLookup, r.stats); err != nil {
 		return err
 	}
-	finalizeSnapshot(retry, r.channelLookup, r.totals, r.stats, true)
-	if err := commitSnapshot(r.ctx, r.st, r.opts, r.state, r.pending, retry, true, r.stats); err != nil {
+	unresolved := finalizeSnapshot(retry, r.channelLookup, r.totals, r.stats, true)
+	checkpoint := len(unresolved) == 0
+	if err := commitSnapshot(r.ctx, r.st, r.opts, r.state, r.pending, retry, checkpoint, r.stats); err != nil {
 		return err
 	}
 	mergeSnapshotContext(r.base, retry)

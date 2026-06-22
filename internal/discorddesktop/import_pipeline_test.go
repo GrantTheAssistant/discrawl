@@ -172,7 +172,7 @@ https://discord.com/api/v9/channels/%s/messages?limit=50
 	require.Equal(t, checkpointEveryFiles+1+checkpointEveryFiles, stats.FilesScanned)
 	require.Equal(t, 1, stats.Messages)
 	require.Equal(t, 1, stats.SkippedMessages)
-	require.GreaterOrEqual(t, stats.Checkpoints, 2)
+	require.GreaterOrEqual(t, stats.Checkpoints, 1)
 
 	results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "partially resolved retry", Limit: 10})
 	require.NoError(t, err)
@@ -181,13 +181,27 @@ https://discord.com/api/v9/channels/%s/messages?limit=50
 	results, err = st.SearchMessages(ctx, store.SearchOptions{Query: "still unresolved retry", Limit: 10})
 	require.NoError(t, err)
 	require.Empty(t, results)
-	requireMessageCount(t, ctx, st, "message_events", 1)
+	requireMessageCount(t, ctx, st, "message_events", 0)
+
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, fmt.Sprintf("entry_%03d", checkpointEveryFiles+1)), bytesf(`https://discord.com/api/v9/channels/%s/messages?limit=50
+{"id":"%s","guild_id":"%s","type":0,"name":"later-resolved"}
+`, unresolvedChannelID, unresolvedChannelID, guildID), 0o600))
+	stats, err = Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, checkpointEveryFiles+1+checkpointEveryFiles, stats.FilesScanned)
+	require.Equal(t, 2, stats.Messages)
+
+	results, err = st.SearchMessages(ctx, store.SearchOptions{Query: "still unresolved retry", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "later-resolved", results[0].ChannelName)
+	requireMessageCount(t, ctx, st, "message_events", 2)
 
 	stats, err = Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
 	require.Equal(t, 0, stats.FilesScanned)
-	require.Equal(t, checkpointEveryFiles+1, stats.FilesUnchanged)
-	requireMessageCount(t, ctx, st, "message_events", 1)
+	require.Equal(t, checkpointEveryFiles+2, stats.FilesUnchanged)
+	requireMessageCount(t, ctx, st, "message_events", 2)
 }
 
 func TestImportCheckpointsUnresolvableRouteBearingCacheMisses(t *testing.T) {
