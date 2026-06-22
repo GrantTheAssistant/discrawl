@@ -92,7 +92,7 @@ func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode chann
 		storedRows = rows
 		mergeStoredThreadChannels(allChannels, rows)
 	}
-	parentIDs := fullSyncThreadParentIDs(channels, storedRows)
+	parentIDs := threadParentIDs(channels)
 	if len(storedThreadParentIDs(storedRows)) == 0 {
 		if err := s.appendThreadCatalog(ctx, allChannels, parentIDs); err != nil {
 			return nil, err
@@ -340,27 +340,6 @@ func threadParentIDs(channels []*discordgo.Channel) []string {
 		}
 	}
 	return parents
-}
-
-func fullSyncThreadParentIDs(topLevel []*discordgo.Channel, storedRows []store.ChannelRow) []string {
-	storedParents := storedThreadParentIDs(storedRows)
-	if len(storedParents) == 0 {
-		return threadParentIDs(topLevel)
-	}
-	parents := make([]string, 0, len(topLevel))
-	for _, channel := range topLevel {
-		if channel == nil {
-			continue
-		}
-		if channel.Type == discordgo.ChannelTypeGuildForum {
-			parents = append(parents, channel.ID)
-			continue
-		}
-		if _, ok := storedParents[channel.ID]; ok && isThreadParent(channel) {
-			parents = append(parents, channel.ID)
-		}
-	}
-	return uniqueIDs(parents)
 }
 
 func storedThreadParentIDs(rows []store.ChannelRow) map[string]struct{} {
