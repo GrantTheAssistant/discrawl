@@ -77,6 +77,29 @@ func TestBuildQuiet(t *testing.T) {
 		require.Equal(t, "c0", quiet.Channels[0].ChannelID)
 		require.Greater(t, quiet.Channels[1].DaysSilent, quiet.Channels[2].DaysSilent)
 	})
+
+	t.Run("future messages do not hide quiet channels", func(t *testing.T) {
+		oldMessageAt := now.Add(-45 * 24 * time.Hour)
+		require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c8", GuildID: "g1", Kind: "text", Name: "future-skew", RawJSON: `{}`}))
+		require.NoError(t, s.UpsertMessages(ctx, []store.MessageMutation{
+			{Record: store.MessageRecord{ID: "m8-old", GuildID: "g1", ChannelID: "c8", ChannelName: "future-skew", AuthorID: "u1", AuthorName: "u1", CreatedAt: oldMessageAt.Format(time.RFC3339Nano), Content: "stale", NormalizedContent: "stale", RawJSON: `{}`}},
+			{Record: store.MessageRecord{ID: "m8-future", GuildID: "g1", ChannelID: "c8", ChannelName: "future-skew", AuthorID: "u1", AuthorName: "u1", CreatedAt: now.Add(24 * time.Hour).Format(time.RFC3339Nano), Content: "future", NormalizedContent: "future", RawJSON: `{}`}},
+		}))
+
+		quiet, err := BuildQuiet(ctx, s, QuietOptions{Now: now, Since: 30 * 24 * time.Hour, GuildID: "g1"})
+		require.NoError(t, err)
+
+		var skewed *QuietChannel
+		for i := range quiet.Channels {
+			if quiet.Channels[i].ChannelID == "c8" {
+				skewed = &quiet.Channels[i]
+				break
+			}
+		}
+		require.NotNil(t, skewed)
+		require.Equal(t, oldMessageAt.Format(time.RFC3339), skewed.LastMessage)
+		require.Equal(t, 45, skewed.DaysSilent)
+	})
 }
 
 func seedQuietStore(t *testing.T, ctx context.Context) (*store.Store, time.Time) {

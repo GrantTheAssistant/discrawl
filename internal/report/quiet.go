@@ -91,6 +91,7 @@ with latest_messages as (
 				order by julianday(m.created_at) desc, m.id desc
 			) as rn
 		from messages m
+		where julianday(m.created_at) < julianday(?)
 	)
 	where rn = 1
 )
@@ -104,7 +105,8 @@ from channels c
 left join latest_messages lm on lm.guild_id = c.guild_id and lm.channel_id = c.id
 where ` + quietChannelKindPredicate + `
 `)
-	args := make([]any, 0, 2)
+	args := make([]any, 0, 3)
+	args = append(args, reportTimeArg(now))
 	if guildID != "" {
 		query.WriteString("  and c.guild_id = ?\n")
 		args = append(args, guildID)
