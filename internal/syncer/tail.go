@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -82,7 +83,18 @@ func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Messag
 }
 
 func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Message) error {
-	if !t.allowGuild(msg.GuildID) {
+	if msg == nil {
+		return nil
+	}
+	if msg.GuildID != "" && !t.allowGuild(msg.GuildID) {
+		return nil
+	}
+	var err error
+	msg, err = t.messageUpdateSnapshot(ctx, msg)
+	if err != nil {
+		return err
+	}
+	if msg == nil || !t.allowGuild(msg.GuildID) {
 		return nil
 	}
 	mutation, err := buildMessageMutation(ctx, msg, "", "", false, t.attachmentTextEnabled)
@@ -96,6 +108,39 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 		return err
 	}
 	return t.store.SetSyncState(ctx, "tail:last_event", msg.ID)
+}
+
+func (t *tailHandler) messageUpdateSnapshot(ctx context.Context, msg *discordgo.Message) (*discordgo.Message, error) {
+	if t.client == nil || msg.ChannelID == "" || msg.ID == "" {
+		if isPartialMessageUpdate(msg) {
+			return nil, nil
+		}
+		return msg, nil
+	}
+	full, err := t.client.ChannelMessage(ctx, msg.ChannelID, msg.ID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch message update %s/%s: %w", msg.ChannelID, msg.ID, err)
+	}
+	if full != nil {
+		if full.ID == "" {
+			full.ID = msg.ID
+		}
+		if full.GuildID == "" {
+			full.GuildID = msg.GuildID
+		}
+		if full.ChannelID == "" {
+			full.ChannelID = msg.ChannelID
+		}
+		return full, nil
+	}
+	if isPartialMessageUpdate(msg) {
+		return nil, nil
+	}
+	return msg, nil
+}
+
+func isPartialMessageUpdate(msg *discordgo.Message) bool {
+	return msg == nil || msg.Author == nil || msg.Timestamp.IsZero()
 }
 
 func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.MessageDelete) error {

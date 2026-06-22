@@ -125,6 +125,72 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 	require.Equal(t, "10", cursor)
 }
 
+func TestTailHandlerMessageUpdateFetchesFullMessageBeforeUpsert(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	createdAt := time.Now().UTC()
+	original := &discordgo.Message{
+		ID:        "9",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "original <@u2>",
+		Timestamp: createdAt,
+		Author:    &discordgo.User{ID: "u1", Username: "peter"},
+		Attachments: []*discordgo.MessageAttachment{{
+			ID:          "a1",
+			Filename:    "trace.txt",
+			ContentType: "text/plain",
+			Size:        42,
+		}},
+		Mentions: []*discordgo.User{{ID: "u2", Username: "shadow", GlobalName: "Shadow"}},
+	}
+	updated := *original
+	updated.Content = "edited <@u2>"
+
+	client := &fakeClient{
+		messages: map[string][]*discordgo.Message{
+			"c1": {&updated},
+		},
+	}
+	handler := &tailHandler{store: s, client: client}
+
+	require.NoError(t, handler.OnMessageCreate(ctx, original))
+	require.NoError(t, handler.OnMessageUpdate(ctx, &discordgo.Message{
+		ID:        "9",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "edited <@u2>",
+	}))
+
+	messages, err := s.ListMessages(ctx, store.MessageListOptions{GuildIDs: []string{"g1"}, IncludeEmpty: true})
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.Equal(t, "edited <@u2>", messages[0].Content)
+	require.Equal(t, "u1", messages[0].AuthorID)
+	require.Equal(t, "peter", messages[0].AuthorName)
+	require.Equal(t, createdAt.Format(time.RFC3339Nano), messages[0].CreatedAt.Format(time.RFC3339Nano))
+	require.True(t, messages[0].HasAttachments)
+	require.Equal(t, "trace.txt", messages[0].AttachmentNames)
+
+	attachments, err := s.ListAttachments(ctx, store.AttachmentListOptions{MessageID: "9"})
+	require.NoError(t, err)
+	require.Len(t, attachments, 1)
+	require.Equal(t, "a1", attachments[0].AttachmentID)
+	require.Equal(t, "trace.txt", attachments[0].Filename)
+	require.Equal(t, "u1", attachments[0].AuthorID)
+
+	mentions, err := s.ListMentions(ctx, store.MentionListOptions{Target: "u2"})
+	require.NoError(t, err)
+	require.Len(t, mentions, 1)
+	require.Equal(t, "u2", mentions[0].TargetID)
+	require.Equal(t, "Shadow", mentions[0].TargetName)
+}
+
 func TestHelpers(t *testing.T) {
 	t.Parallel()
 
