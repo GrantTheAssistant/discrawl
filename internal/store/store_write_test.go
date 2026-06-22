@@ -181,6 +181,103 @@ func TestUpsertMessageWithEmbeddingsQueuesExistingMessageWithoutJob(t *testing.T
 	require.Equal(t, [][]string{{"pending", "0"}}, rows)
 }
 
+func TestMarkMessageDeletedClearsSearchAndEmbeddingState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, record := range []MessageRecord{
+		{
+			ID:                "m1",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			AuthorName:        "Peter",
+			MessageType:       0,
+			CreatedAt:         now,
+			Content:           "vanishing needle",
+			NormalizedContent: "vanishing needle",
+			RawJSON:           `{"author":{"username":"Peter"}}`,
+		},
+		{
+			ID:                "m2",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u2",
+			AuthorName:        "Alice",
+			MessageType:       0,
+			CreatedAt:         now,
+			Content:           "active reference",
+			NormalizedContent: "active reference",
+			RawJSON:           `{"author":{"username":"Alice"}}`,
+		},
+	} {
+		require.NoError(t, s.UpsertMessageWithOptions(ctx, record, WriteOptions{EnqueueEmbedding: true}))
+	}
+
+	stats, err := s.DrainEmbeddingJobs(ctx, &fakeEmbeddingProvider{
+		batches: []embed.EmbeddingBatch{{Vectors: [][]float32{{1, 0}, {0, 1}}}},
+	}, EmbeddingDrainOptions{Provider: "ollama", Model: "nomic-embed-text", Limit: 10, BatchSize: 2})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.Succeeded)
+
+	results, err := s.SearchMessages(ctx, SearchOptions{Query: "needle", Limit: 10})
+	require.NoError(t, err)
+	require.Equal(t, []string{"m1"}, searchResultIDs(results))
+
+	semanticResults, err := s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+		QueryVector: []float32{1, 0},
+		Provider:    "ollama",
+		Model:       "nomic-embed-text",
+		Dimensions:  2,
+		Limit:       10,
+	})
+	require.NoError(t, err)
+	require.Contains(t, searchResultIDs(semanticResults), "m1")
+
+	require.NoError(t, s.MarkMessageDeleted(ctx, "g1", "c1", "m1", map[string]string{"deleted": "1"}))
+
+	results, err = s.SearchMessages(ctx, SearchOptions{Query: "needle", Limit: 10})
+	require.NoError(t, err)
+	require.Empty(t, results)
+
+	semanticResults, err = s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+		QueryVector: []float32{1, 0},
+		Provider:    "ollama",
+		Model:       "nomic-embed-text",
+		Dimensions:  2,
+		Limit:       10,
+	})
+	require.NoError(t, err)
+	require.NotContains(t, searchResultIDs(semanticResults), "m1")
+
+	for _, query := range []string{
+		"select count(*) from message_fts where message_id = 'm1'",
+		"select count(*) from message_embeddings where message_id = 'm1'",
+		"select count(*) from embedding_jobs where message_id = 'm1'",
+	} {
+		_, rows, err := s.ReadOnlyQuery(ctx, query)
+		require.NoError(t, err, query)
+		require.Equal(t, "0", rows[0][0], query)
+	}
+
+	requeued, err := s.RequeueAllEmbeddingJobs(ctx, EmbeddingDrainOptions{Provider: "ollama", Model: "nomic-embed-text"})
+	require.NoError(t, err)
+	require.Equal(t, 1, requeued)
+	_, rows, err := s.ReadOnlyQuery(ctx, "select count(*) from embedding_jobs where message_id = 'm1'")
+	require.NoError(t, err)
+	require.Equal(t, "0", rows[0][0])
+}
+
 func TestDrainEmbeddingJobsStoresVectorsAndSkipsEmptyInput(t *testing.T) {
 	t.Parallel()
 

@@ -315,6 +315,15 @@ func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, mess
 		if _, err := tx.ExecContext(ctx, `delete from message_fts where rowid = ?`, rowID); err != nil {
 			return err
 		}
+		if message.DeletedAt != "" {
+			if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, message.ID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `delete from embedding_jobs where message_id = ?`, message.ID); err != nil {
+				return err
+			}
+			return nil
+		}
 		if _, err := tx.ExecContext(ctx, `
 			insert into message_fts(rowid, message_id, guild_id, channel_id, author_id, author_name, channel_name, content)
 			values(?, ?, ?, ?, ?, ?, ?, ?)
@@ -344,6 +353,17 @@ func (s *Store) MarkMessageDeleted(ctx context.Context, guildID, channelID, mess
 		UpdatedAt: now,
 		ID:        messageID,
 	}); err != nil {
+		return err
+	}
+	if rowID, ok := messageFTSRowID(messageID); ok {
+		if _, err := tx.ExecContext(ctx, `delete from message_fts where rowid = ? or message_id = ?`, rowID, messageID); err != nil {
+			return err
+		}
+	}
+	if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, messageID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from embedding_jobs where message_id = ?`, messageID); err != nil {
 		return err
 	}
 	body, err := json.Marshal(payload)

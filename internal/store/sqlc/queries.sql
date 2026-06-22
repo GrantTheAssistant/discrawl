@@ -41,8 +41,10 @@ where attachment_id = ?;
 
 -- name: CountEmbeddingBacklog :one
 select count(*) as count
-from embedding_jobs
-where state = 'pending';
+from embedding_jobs j
+join messages m on m.id = j.message_id
+where j.state = 'pending'
+  and m.deleted_at is null;
 
 -- name: HasMessageEmbeddings :one
 select exists(
@@ -398,7 +400,8 @@ insert or ignore into embedding_jobs(
 	message_id, state, attempts, provider, model, input_version, last_error, locked_at, updated_at
 )
 select id, 'pending', 0, ?, ?, ?, '', null, ?
-from messages;
+from messages
+where deleted_at is null;
 
 -- name: RequeueAllEmbeddingJobs :execrows
 update embedding_jobs
@@ -410,7 +413,7 @@ set state = 'pending',
 	last_error = '',
 	locked_at = null,
 	updated_at = ?
-where message_id in (select id from messages);
+where message_id in (select id from messages where deleted_at is null);
 
 -- name: ListPendingEmbeddingJobs :many
 select
@@ -423,6 +426,7 @@ select
 from embedding_jobs j
 join messages m on m.id = j.message_id
 where j.state = 'pending'
+  and m.deleted_at is null
   and (j.locked_at is null or j.locked_at = '' or j.locked_at < ?)
 order by j.updated_at, j.message_id
 limit ?;

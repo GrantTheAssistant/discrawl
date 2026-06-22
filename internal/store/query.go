@@ -93,16 +93,18 @@ func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]Searc
 	query := `
 		with recent_matches as (
 			select
-				rowid,
-				message_id,
-				guild_id,
-				channel_id,
-				author_id,
+				message_fts.rowid as rowid,
+				message_fts.message_id,
+				message_fts.guild_id,
+				message_fts.channel_id,
+				message_fts.author_id,
 				coalesce(author_name, '') as author_name,
 				coalesce(channel_name, '') as channel_name
 			from message_fts
-			where ` + strings.Join(clauses, " and ") + `
-			order by rowid desc
+			join messages fm on fm.id = message_fts.message_id
+			where fm.deleted_at is null
+			  and ` + strings.Join(clauses, " and ") + `
+			order by message_fts.rowid desc
 			limit ?
 		)
 		select
@@ -116,7 +118,8 @@ func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]Searc
 		from recent_matches
 		join messages m on m.id = recent_matches.message_id
 		left join channels c on c.id = m.channel_id
-		where (? or trim(coalesce(m.normalized_content, '')) <> '')
+		where m.deleted_at is null
+		  and (? or trim(coalesce(m.normalized_content, '')) <> '')
 		order by recent_matches.rowid desc
 		limit ?
 	`
@@ -191,6 +194,7 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 		"e.model = ?",
 		"e.input_version = ?",
 		"e.dimensions = ?",
+		"m.deleted_at is null",
 	}
 	args := []any{opts.Provider, opts.Model, opts.InputVersion, opts.Dimensions}
 	if len(opts.GuildIDs) > 0 {
@@ -369,6 +373,7 @@ func (s *Store) searchResultDetails(ctx context.Context, messageIDs []string) (m
 		from messages m
 		left join channels c on c.id = m.channel_id
 		where m.id in (`+placeholders(len(messageIDs))+`)
+		  and m.deleted_at is null
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -575,7 +580,7 @@ func (s *Store) CheckMessageFTS(ctx context.Context) error {
 
 func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
 	args := []any{"%" + opts.Query + "%"}
-	clauses := []string{"m.normalized_content like ?"}
+	clauses := []string{"m.deleted_at is null", "m.normalized_content like ?"}
 	if len(opts.GuildIDs) > 0 {
 		clauses = append(clauses, "m.guild_id in ("+placeholders(len(opts.GuildIDs))+")")
 		for _, guildID := range opts.GuildIDs {

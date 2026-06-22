@@ -1810,7 +1810,7 @@ func TestEventsSyncStateAndHelpers(t *testing.T) {
 
 	results, err := s.searchFallback(ctx, SearchOptions{Query: "hello", Limit: 10})
 	require.NoError(t, err)
-	require.Len(t, results, 1)
+	require.Empty(t, results)
 
 	empty, err := s.GetSyncState(ctx, "missing")
 	require.NoError(t, err)

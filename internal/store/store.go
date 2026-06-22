@@ -669,6 +669,7 @@ func (s *Store) rebuildFTS(ctx context.Context) error {
 			m.normalized_content
 		from messages m
 		left join channels c on c.id = m.channel_id
+		where m.deleted_at is null
 		order by cast(m.id as integer)
 	`)
 	if err != nil {

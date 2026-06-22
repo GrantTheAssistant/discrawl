@@ -55,8 +55,10 @@ func (q *Queries) CountChannelsByGuild(ctx context.Context, guildID string) (int
 
 const countEmbeddingBacklog = `-- name: CountEmbeddingBacklog :one
 select count(*) as count
-from embedding_jobs
-where state = 'pending'
+from embedding_jobs j
+join messages m on m.id = j.message_id
+where j.state = 'pending'
+  and m.deleted_at is null
 `
 
 func (q *Queries) CountEmbeddingBacklog(ctx context.Context) (int64, error) {
@@ -531,6 +533,7 @@ insert or ignore into embedding_jobs(
 )
 select id, 'pending', 0, ?, ?, ?, '', null, ?
 from messages
+where deleted_at is null
 `
 
 type InsertMissingEmbeddingJobsParams struct {
@@ -1035,6 +1038,7 @@ select
 from embedding_jobs j
 join messages m on m.id = j.message_id
 where j.state = 'pending'
+  and m.deleted_at is null
   and (j.locked_at is null or j.locked_at = '' or j.locked_at < ?)
 order by j.updated_at, j.message_id
 limit ?
@@ -1386,7 +1390,7 @@ set state = 'pending',
 	last_error = '',
 	locked_at = null,
 	updated_at = ?
-where message_id in (select id from messages)
+where message_id in (select id from messages where deleted_at is null)
 `
 
 type RequeueAllEmbeddingJobsParams struct {
