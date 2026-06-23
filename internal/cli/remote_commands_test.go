@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -420,7 +421,7 @@ func TestPublishIngestRowsStreamsBatchesAndFinalizes(t *testing.T) {
 	if requests[0].Cursor != "" || requests[0].Final || len(requests[0].Rows) != discrawlCloudBatchSize {
 		t.Fatalf("first request = %#v", requests[0])
 	}
-	if requests[1].Cursor != fmt.Sprint(discrawlCloudBatchSize) || !requests[1].Final || len(requests[1].Rows) != 1 {
+	if requests[1].Cursor != strconv.Itoa(discrawlCloudBatchSize) || !requests[1].Final || len(requests[1].Rows) != 1 {
 		t.Fatalf("second request = %#v", requests[1])
 	}
 	if requests[0].Rows[0][1] != "row-000" {
