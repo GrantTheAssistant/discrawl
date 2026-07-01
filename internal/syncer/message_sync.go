@@ -757,7 +757,8 @@ func (p *messageSyncProgress) finish(err error) {
 			"elapsed", elapsed,
 		}
 		if oldestID != "" {
-			attrs = append(attrs,
+			attrs = append(
+				attrs,
 				"oldest_active_channel_id", oldestID,
 				"oldest_active_channel_name", oldestName,
 				"oldest_active_elapsed", oldestElapsed,

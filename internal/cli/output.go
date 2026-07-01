@@ -322,7 +322,8 @@ func printHuman(w io.Writer, value any) error {
 			if !row.ResolvedAt.IsZero() {
 				status = "resolved"
 			}
-			if _, err := fmt.Fprintf(w, "\n%s source=%s operation=%s guild=%s channel=%s message=%s %s=%s retries=%d last=%s\n%s: %s\n",
+			if _, err := fmt.Fprintf(
+				w, "\n%s source=%s operation=%s guild=%s channel=%s message=%s %s=%s retries=%d last=%s\n%s: %s\n",
 				status, row.Source, row.Operation, row.GuildID, row.ChannelID, row.MessageID,
 				row.RelatedKind, row.RelatedID, row.RetryCount, formatTime(row.LastSeenAt),
 				row.ErrorClass, row.ErrorMessage,
@@ -453,7 +454,8 @@ func printHuman(w io.Writer, value any) error {
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "CHANNEL\tNAME\tMESSAGES\tAUTHORS\tFIRST\tLAST")
 		for _, row := range v {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\n",
+			_, _ = fmt.Fprintf(
+				tw, "%s\t%s\t%d\t%d\t%s\t%s\n",
 				row.ChannelID,
 				row.Name,
 				row.MessageCount,
@@ -474,7 +476,8 @@ func printHuman(w io.Writer, value any) error {
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "GUILD\tUSER\tNAME\tDISPLAY\tPROFILE")
 		for _, row := range v {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(
+				tw, "%s\t%s\t%s\t%s\t%s\n",
 				row.GuildID,
 				row.UserID,
 				row.Username,
@@ -484,7 +487,8 @@ func printHuman(w io.Writer, value any) error {
 		}
 		return tw.Flush()
 	case store.MemberProfile:
-		if _, err := fmt.Fprintf(w, "guild=%s\nuser=%s\nusername=%s\ndisplay=%s\njoined=%s\nbot=%t\n",
+		if _, err := fmt.Fprintf(
+			w, "guild=%s\nuser=%s\nusername=%s\ndisplay=%s\njoined=%s\nbot=%t\n",
 			v.Member.GuildID,
 			v.Member.UserID,
 			v.Member.Username,
@@ -529,7 +533,8 @@ func printHuman(w io.Writer, value any) error {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintf(w, "message_count=%d\nfirst_message=%s\nlast_message=%s\n",
+		if _, err := fmt.Fprintf(
+			w, "message_count=%d\nfirst_message=%s\nlast_message=%s\n",
 			v.MessageCount,
 			formatTime(v.FirstMessageAt),
 			formatTime(v.LastMessageAt),
@@ -579,7 +584,8 @@ func printHuman(w io.Writer, value any) error {
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "CHANNEL\tKIND\tLAST MESSAGE\tDAYS SILENT")
 		for _, row := range v.Channels {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(
+				tw, "%s\t%s\t%s\t%s\n",
 				row.ChannelName,
 				firstNonEmpty(row.Kind, "unknown"),
 				firstNonEmpty(row.LastMessage, "never"),
@@ -641,7 +647,8 @@ func printHuman(w io.Writer, value any) error {
 }
 
 func printCoverageHuman(w io.Writer, report store.CoverageReport) error {
-	if _, err := fmt.Fprintf(w, "guilds=%d\nchannels=%d\nmessage_channels=%d\nnamed_channels=%d\nsynthetic_channels=%d\nmessages=%d\nhistory_complete_channels=%d\nknown_failures=%d\nunscoped_known_failures=%d\nlast_bot_sync=%s\nlast_wiretap_import=%s\nwiretap_skipped_messages=%d\nwiretap_skipped_channels=%d\n",
+	if _, err := fmt.Fprintf(
+		w, "guilds=%d\nchannels=%d\nmessage_channels=%d\nnamed_channels=%d\nsynthetic_channels=%d\nmessages=%d\nhistory_complete_channels=%d\nknown_failures=%d\nunscoped_known_failures=%d\nlast_bot_sync=%s\nlast_wiretap_import=%s\nwiretap_skipped_messages=%d\nwiretap_skipped_channels=%d\n",
 		report.Totals.GuildCount,
 		report.Totals.ChannelCount,
 		report.Totals.MessageChannelCount,
@@ -659,7 +666,8 @@ func printCoverageHuman(w io.Writer, report store.CoverageReport) error {
 		return err
 	}
 	for _, guild := range report.Guilds {
-		if _, err := fmt.Fprintf(w, "\n%s (%s): messages=%d channels=%d named=%d synthetic=%d known_failures=%d first=%s last=%s\n",
+		if _, err := fmt.Fprintf(
+			w, "\n%s (%s): messages=%d channels=%d named=%d synthetic=%d known_failures=%d first=%s last=%s\n",
 			guild.Name, guild.ID, guild.MessageCount, guild.ChannelCount,
 			guild.NamedChannelCount, guild.SyntheticChannelCount, guild.KnownFailureCount,
 			formatTime(guild.EarliestMessageAt), formatTime(guild.LatestMessageAt),
@@ -677,7 +685,8 @@ func printCoverageHuman(w io.Writer, report store.CoverageReport) error {
 			if channel.HistoryComplete != nil && *channel.HistoryComplete {
 				history = "complete"
 			}
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(
+				tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n",
 				channel.Name, channel.ID, channel.Kind, source, channel.MessageCount, channel.KnownFailureCount,
 				formatTime(channel.EarliestMessageAt), formatTime(channel.LatestMessageAt), history,
 			)

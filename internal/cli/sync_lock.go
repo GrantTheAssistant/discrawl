@@ -283,7 +283,8 @@ func syncLockMetadataPath(lockPath string) string {
 }
 
 func syncLockMetadataBody(operation, phase string, started, updated time.Time, token string) string {
-	return fmt.Sprintf("pid=%d\noperation=%s\ntoken=%s\nstarted_at=%s\nupdated_at=%s\nphase=%s\n",
+	return fmt.Sprintf(
+		"pid=%d\noperation=%s\ntoken=%s\nstarted_at=%s\nupdated_at=%s\nphase=%s\n",
 		os.Getpid(),
 		strings.TrimSpace(operation),
 		token,

@@ -22,7 +22,7 @@ Assumptions:
 ## 1) Verify build + tests
 
 ```sh
-go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.1 run
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run
 go test -count=1 ./... -coverprofile=coverage.out
 go tool cover -func=coverage.out | tail -n 1
 go test -count=1 -race ./...

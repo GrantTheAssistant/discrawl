@@ -917,7 +917,7 @@ Set `sync.attachment_text = false` if you want to keep attachment metadata and f
 Local gate:
 
 ```bash
-go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.1 run
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run
 go test ./... -coverprofile=/tmp/discrawl.cover
 go tool cover -func=/tmp/discrawl.cover | tail -n 1
 go build ./cmd/discrawl

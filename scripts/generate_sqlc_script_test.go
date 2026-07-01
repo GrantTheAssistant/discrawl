@@ -37,7 +37,8 @@ func TestGenerateSQLCAnchorsToRepoRoot(t *testing.T) {
 
 	cmd := exec.CommandContext(t.Context(), bash, "./generate-sqlc.sh")
 	cmd.Dir = scriptDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+tempDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"RECORD_PWD="+recordPwd,
 		"RECORD_ARGS="+recordArgs,
