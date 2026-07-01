@@ -125,6 +125,7 @@ Commands:
   channels
   status
   diagnostics
+  coverage
   remote
   whoami
   report
@@ -147,6 +148,11 @@ func printCommandUsage(w io.Writer, args []string) error {
 }
 
 var commandUsage = map[string]string{
+	"coverage": `Usage:
+  discrawl coverage [--guild ID] [--json]
+
+Reports archive coverage across every guild by default, including named versus synthetic channels, message bounds, history-complete markers, and persisted wiretap skip counts.
+`,
 	"diagnostics": `Usage:
   discrawl diagnostics [--json]
 
@@ -299,6 +305,18 @@ func printHuman(w io.Writer, value any) error {
 		_, err := fmt.Fprintf(w, "path=%s\nvisited=%d\nfiles=%d\nskipped=%d\nunchanged=%d\nfast_skipped=%d\nobjects=%d\nguilds=%d\nchannels=%d\nmessages=%d\ndm_messages=%d\ndm_channels=%d\nguild_messages=%d\nskipped_messages=%d\nskipped_channels=%d\ncheckpoints=%d\nfull_cache=%t\ndry_run=%t\n",
 			v.Path, v.FilesVisited, v.FilesScanned, v.FilesSkipped, v.FilesUnchanged, v.CacheFilesFastSkipped, v.JSONObjects, v.Guilds, v.Channels, v.Messages, v.DMMessages, v.DMChannels, v.GuildMessages, v.SkippedMessages, v.SkippedChannels, v.Checkpoints, v.FullCache, v.DryRun)
 		return err
+	case store.CoverageReport:
+		return printCoverageHuman(w, v)
+	case wiretapProgress:
+		if _, err := fmt.Fprintf(w, "import_messages=%d\nimport_channels=%d\nimport_skipped_messages=%d\nimport_skipped_channels=%d\n", v.Import.Messages, v.Import.Channels, v.Import.SkippedMessages, v.Import.SkippedChannels); err != nil {
+			return err
+		}
+		if v.Delta != nil {
+			if _, err := fmt.Fprintf(w, "delta_messages=%d\ndelta_channels=%d\ndelta_named_channels=%d\ndelta_synthetic_channels=%d\n", v.Delta.Messages, v.Delta.Channels, v.Delta.NamedChannels, v.Delta.SyntheticChannels); err != nil {
+				return err
+			}
+		}
+		return printCoverageHuman(w, v.Coverage)
 	case store.Status:
 		_, err := fmt.Fprintf(w, "db=%s\nguilds=%d\nchannels=%d\nthreads=%d\nmessages=%d\nmembers=%d\nembedding_backlog=%d\nlast_sync=%s\nlast_tail_event=%s\n",
 			v.DBPath, v.GuildCount, v.ChannelCount, v.ThreadCount, v.MessageCount, v.MemberCount, v.EmbeddingBacklog,
@@ -596,6 +614,53 @@ func printHuman(w io.Writer, value any) error {
 	default:
 		return errors.New("no human printer")
 	}
+}
+
+func printCoverageHuman(w io.Writer, report store.CoverageReport) error {
+	if _, err := fmt.Fprintf(w, "guilds=%d\nchannels=%d\nmessage_channels=%d\nnamed_channels=%d\nsynthetic_channels=%d\nmessages=%d\nhistory_complete_channels=%d\nlast_bot_sync=%s\nlast_wiretap_import=%s\nwiretap_skipped_messages=%d\nwiretap_skipped_channels=%d\n",
+		report.Totals.GuildCount,
+		report.Totals.ChannelCount,
+		report.Totals.MessageChannelCount,
+		report.Totals.NamedChannelCount,
+		report.Totals.SyntheticChannelCount,
+		report.Totals.MessageCount,
+		report.Totals.HistoryCompleteChannelCount,
+		formatTime(report.LastBotSyncAt),
+		formatTime(report.Wiretap.LastImportAt),
+		report.Wiretap.SkippedMessages,
+		report.Wiretap.SkippedChannels,
+	); err != nil {
+		return err
+	}
+	for _, guild := range report.Guilds {
+		if _, err := fmt.Fprintf(w, "\n%s (%s): messages=%d channels=%d named=%d synthetic=%d first=%s last=%s\n",
+			guild.Name, guild.ID, guild.MessageCount, guild.ChannelCount,
+			guild.NamedChannelCount, guild.SyntheticChannelCount,
+			formatTime(guild.EarliestMessageAt), formatTime(guild.LatestMessageAt),
+		); err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "CHANNEL\tID\tKIND\tSOURCE\tMESSAGES\tFIRST\tLAST\tHISTORY")
+		for _, channel := range guild.Channels {
+			source := "named"
+			if channel.Synthetic {
+				source = "synthetic"
+			}
+			history := "unknown"
+			if channel.HistoryComplete != nil && *channel.HistoryComplete {
+				history = "complete"
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+				channel.Name, channel.ID, channel.Kind, source, channel.MessageCount,
+				formatTime(channel.EarliestMessageAt), formatTime(channel.LatestMessageAt), history,
+			)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func formatTime(t time.Time) string {

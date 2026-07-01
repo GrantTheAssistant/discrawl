@@ -92,6 +92,13 @@ binary-ish {"t":"MESSAGE_CREATE","token":"do-not-store","d":{"id":"3333333333333
 	require.Equal(t, 1, stats.FilesScanned)
 	require.Equal(t, 1, stats.Messages)
 	require.Equal(t, 1, stats.Channels)
+	coverage, err := st.Coverage(ctx, DirectMessageGuildID, time.Date(2026, 4, 23, 18, 31, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Equal(t, 1, coverage.Wiretap.FilesScanned)
+	require.Equal(t, 1, coverage.Wiretap.Messages)
+	require.Zero(t, coverage.Wiretap.SkippedMessages)
+	require.Equal(t, stats.FinishedAt, coverage.Wiretap.LastImportAt)
+	require.Equal(t, 1, coverage.Totals.MessageChannelCount)
 
 	results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "launch", Limit: 10})
 	require.NoError(t, err)
@@ -176,6 +183,9 @@ func TestImportDryRunDoesNotWrite(t *testing.T) {
 	results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "dry", Limit: 10})
 	require.NoError(t, err)
 	require.Empty(t, results)
+	rawStats, err := st.GetSyncState(ctx, "wiretap:last_stats:v1")
+	require.NoError(t, err)
+	require.Empty(t, rawStats)
 }
 
 func TestImportMissingDesktopPathIsEmpty(t *testing.T) {

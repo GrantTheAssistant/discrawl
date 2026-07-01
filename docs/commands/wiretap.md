@@ -14,6 +14,7 @@ discrawl wiretap --path "$HOME/Library/Application Support/discord"
 discrawl wiretap --dry-run
 discrawl wiretap --full-cache
 discrawl wiretap --watch-every 2m
+discrawl wiretap --watch-every 10s --stats --json
 ```
 
 ## Flags
@@ -22,6 +23,7 @@ discrawl wiretap --watch-every 2m
 - `--dry-run` - report what would be imported without writing anything
 - `--full-cache` - exhaustive Chromium HTTP cache import for historical guild-cache archaeology (slower)
 - `--watch-every <duration>` - keep importing on a periodic loop
+- `--stats` - attach a full archive coverage snapshot; watched samples after the first include deltas
 - `--max-file-bytes <n>` - skip unusually large files (default 64 MiB)
 
 ## Notes
@@ -34,6 +36,7 @@ discrawl wiretap --watch-every 2m
 - imports what Discord Desktop has cached locally, not complete live DM history
 - scans local `.ldb`, `.log`, `.json`, and `.txt` artifacts for Discord message JSON, plus route-bearing Chromium HTTP cache entries by default
 - does not extract, store, or print Discord auth tokens
+- persists only compact aggregate import counters for [`coverage`](coverage.html); raw cache paths and payloads are not added to coverage state
 
 ## Default desktop paths
 
@@ -43,5 +46,6 @@ discrawl wiretap --watch-every 2m
 ## See also
 
 - [Wiretap guide](../guides/wiretap.html)
+- [`coverage`](coverage.html)
 - [`dms`](dms.html)
 - [`sync`](sync.html)

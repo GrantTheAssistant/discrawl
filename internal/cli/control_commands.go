@@ -38,11 +38,12 @@ func (r *runtime) runMetadata(args []string) error {
 		DefaultLogs:     cfg.LogDir,
 		DefaultShare:    cfg.Share.RepoPath,
 	}
-	manifest.Capabilities = []string{"metadata", "status", "diagnostics", "doctor", "sync", "tap", "tui", "git-share", "cloud-remote", "cloud-publish", "sql", "embeddings"}
+	manifest.Capabilities = []string{"metadata", "status", "diagnostics", "coverage", "doctor", "sync", "tap", "tui", "git-share", "cloud-remote", "cloud-publish", "sql", "embeddings"}
 	manifest.Privacy = control.Privacy{ContainsPrivateMessages: true, ExportsSecrets: false, LocalOnlyScopes: []string{"discord", "desktop-cache", "sqlite", "git-share"}}
 	manifest.Commands = map[string]control.Command{
 		"status":          {Title: "Status", Argv: []string{"discrawl", "status", "--json"}, JSON: true},
 		"diagnostics":     {Title: "Diagnostics", Argv: []string{"discrawl", "diagnostics", "--json"}, JSON: true},
+		"coverage":        {Title: "Archive coverage", Argv: []string{"discrawl", "coverage", "--json"}, JSON: true},
 		"check-update":    {Title: "Check for updates", Argv: []string{"discrawl", "check-update", "--json"}, JSON: true},
 		"doctor":          {Title: "Doctor", Argv: []string{"discrawl", "doctor", "--json"}, JSON: true},
 		"sync":            {Title: "Sync", Argv: []string{"discrawl", "--json", "sync"}, JSON: true, Mutates: true},

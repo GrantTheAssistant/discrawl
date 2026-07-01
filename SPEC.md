@@ -405,6 +405,7 @@ discrawl [global flags] <command> [args]
 - `members`
 - `channels`
 - `status`
+- `coverage`
 - `doctor`
 
 ### `init`
@@ -471,6 +472,7 @@ Expected flags:
 - `--watch-every <duration>`
 - `--max-file-bytes <bytes>`
 - `--full-cache`
+- `--stats`
 
 Requirements:
 
@@ -479,6 +481,8 @@ Requirements:
 - scan bounded local files only
 - default to route-bearing HTTP cache entries; exhaustive Chromium cache scans require explicit full-cache mode
 - store sanitized raw metadata, not full arbitrary cache blobs
+- persist only compact aggregate counters for coverage reporting; keep raw cache paths and payloads out of report state
+- with `--watch-every --stats`, include archive count deltas after the first pass
 
 ### `search`
 
@@ -535,6 +539,24 @@ Must show:
 - last sync time
 - last tail event time
 - embedding backlog
+
+### `coverage`
+
+Must show:
+
+- every guild by default, or one exact guild selected with `--guild`
+- total and per-guild message, channel, and message-capable channel counts
+- useful named versus id-placeholder synthetic channel counts
+- per-channel message counts and earliest/latest message timestamps
+- history-complete markers when present
+- last bot sync and wiretap import times
+- persisted skipped-message and skipped-channel counters from the latest successful wiretap pass
+
+Requirements:
+
+- read-only; never authenticate, sync, or update a share
+- human table and stable JSON output
+- exclude soft-deleted messages from coverage counts
 
 ### `doctor`
 

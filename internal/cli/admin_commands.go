@@ -354,15 +354,21 @@ func (r *runtime) runWiretap(args []string) error {
 	fullCache := fs.Bool("full-cache", r.cfg.Desktop.FullCache, "")
 	dryRun := fs.Bool("dry-run", false, "")
 	watchEvery := fs.Duration("watch-every", 0, "")
+	showStats := fs.Bool("stats", false, "")
+	jsonOut := fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
 	if fs.NArg() != 0 {
 		return usageErr(errors.New("wiretap takes flags only"))
 	}
+	if *jsonOut {
+		r.json = true
+	}
 	if *maxFileBytes <= 0 {
 		return usageErr(errors.New("--max-file-bytes must be positive"))
 	}
+	var previousCoverage *store.CoverageReport
 	runOnce := func(ctx context.Context) error {
 		stats, err := discorddesktop.Import(ctx, r.store, discorddesktop.Options{
 			Path:         *path,
@@ -373,6 +379,19 @@ func (r *runtime) runWiretap(args []string) error {
 		})
 		if err != nil {
 			return err
+		}
+		if *showStats {
+			coverage, err := r.store.Coverage(ctx, "", r.nowUTC())
+			if err != nil {
+				return err
+			}
+			progress := wiretapProgress{Import: stats, Coverage: coverage}
+			if previousCoverage != nil {
+				delta := store.CoverageDeltaSince(coverage, *previousCoverage)
+				progress.Delta = &delta
+			}
+			previousCoverage = &coverage
+			return r.print(progress)
 		}
 		return r.print(stats)
 	}

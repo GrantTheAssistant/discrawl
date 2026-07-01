@@ -22,6 +22,7 @@ discrawl status
 
 ## See also
 
+- [`coverage`](coverage.html) - per-guild/channel archive readiness and wiretap skip counts
 - [`diagnostics`](diagnostics.html) - read-only SQLite, WAL, freshness, and writer-lock checks
 - [`doctor`](doctor.html) - liveness check (config, auth, DB, FTS wiring)
 - [`remote`](remote.html) - direct Cloudflare remote archive checks

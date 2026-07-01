@@ -12,6 +12,9 @@
 *.out
 coverage.out
 coverage.*
+!docs/commands/coverage.md
+!internal/cli/coverage.go
+!internal/store/coverage.go
 *.coverprofile
 profile.cov
 
