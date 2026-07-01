@@ -110,10 +110,10 @@ func (s *Store) Coverage(ctx context.Context, guildID string, generatedAt time.T
 	if err != nil {
 		return CoverageReport{}, fmt.Errorf("list coverage guilds: %w", err)
 	}
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var guild CoverageGuild
 		if err := rows.Scan(&guild.ID, &guild.Name); err != nil {
-			_ = rows.Close()
 			return CoverageReport{}, fmt.Errorf("scan coverage guild: %w", err)
 		}
 		guild.Channels = []CoverageChannel{}
