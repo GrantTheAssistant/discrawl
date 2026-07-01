@@ -12,6 +12,10 @@
 - Add a local-only failure ledger with row-level write context, retry/resolution tracking, JSON queries, and known-failure coverage counts.
 - Add a local-first maintainer archive workflow guide covering health, coverage, wiretap, stable queries, and privacy-safe publish preflight. Thanks @joshka.
 
+### Maintenance
+
+- Refresh stable Go modules and CI/release tooling, including SQLite, `go-toml`, Go analyzers, GitHub Actions, GoReleaser, and TruffleHog.
+
 ## 0.11.3 - 2026-06-23
 
 ### Fixes

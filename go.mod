@@ -16,8 +16,8 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/pelletier/go-toml/v2 v2.4.0 // indirect
-	modernc.org/sqlite v1.52.0 // indirect
+	github.com/pelletier/go-toml/v2 v2.4.2 // indirect
+	modernc.org/sqlite v1.53.0 // indirect
 )
 
 require (
@@ -52,7 +52,7 @@ require (
 	golang.org/x/crypto v0.53.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	modernc.org/libc v1.73.4 // indirect
+	modernc.org/libc v1.73.5 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
