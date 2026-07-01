@@ -167,6 +167,9 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 			return stats, err
 		}
 		stats.Checkpoints = 1
+		if err := saveCoverageStats(ctx, st, stats); err != nil {
+			return stats, err
+		}
 		return stats, nil
 	}
 	stats, err := scanAndImport(ctx, st, opts, state)
@@ -174,7 +177,24 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 		return stats, err
 	}
 	stats.DryRun = opts.DryRun
+	if !opts.DryRun {
+		if err := saveCoverageStats(ctx, st, stats); err != nil {
+			return stats, err
+		}
+	}
 	return stats, nil
+}
+
+func saveCoverageStats(ctx context.Context, st *store.Store, stats Stats) error {
+	return st.SetWiretapImportStats(ctx, store.WiretapImportStats{
+		FilesScanned:    stats.FilesScanned,
+		Messages:        stats.Messages,
+		Channels:        stats.Channels,
+		SkippedMessages: stats.SkippedMessages,
+		SkippedChannels: stats.SkippedChannels,
+		StartedAt:       stats.StartedAt,
+		FinishedAt:      stats.FinishedAt,
+	})
 }
 
 func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanState, error) {

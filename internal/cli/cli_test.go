@@ -616,6 +616,72 @@ func TestWiretapImportsDesktopDirectMessages(t *testing.T) {
 	require.Contains(t, out.String(), "secret DM launch plan")
 }
 
+func TestCoverageHumanJSONAndGuildFilter(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c2", GuildID: "g1", Kind: "text", Name: "channel-c2", RawJSON: `{"source":"discord_desktop"}`}))
+	require.NoError(t, s.SetSyncState(ctx, "channel:c1:history_complete", "1"))
+	require.NoError(t, s.SetWiretapImportStats(ctx, store.WiretapImportStats{SkippedMessages: 3, SkippedChannels: 2, FinishedAt: time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)}))
+	require.NoError(t, s.Close())
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "coverage"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "named_channels=1")
+	require.Contains(t, out.String(), "synthetic_channels=1")
+	require.Contains(t, out.String(), "wiretap_skipped_messages=3")
+	require.Contains(t, out.String(), "general")
+
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "coverage", "--guild", "g1", "--json"}, &out, &bytes.Buffer{}))
+	var report store.CoverageReport
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.Equal(t, 1, report.Totals.GuildCount)
+	require.Equal(t, 2, report.Totals.ChannelCount)
+	require.Equal(t, 3, report.Wiretap.SkippedMessages)
+
+	err := Run(ctx, []string{"--config", cfgPath, "coverage", "--guild", "missing"}, &bytes.Buffer{}, &bytes.Buffer{})
+	require.ErrorContains(t, err, `guild "missing" not found`)
+}
+
+func TestCoverageMissingArchiveFailsWithoutCreatingDatabase(t *testing.T) {
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	err := Run(context.Background(), []string{"--config", cfgPath, "coverage"}, &bytes.Buffer{}, &bytes.Buffer{})
+	require.Equal(t, 5, ExitCode(err))
+	require.ErrorContains(t, err, "coverage requires a local SQLite archive")
+	require.NoFileExists(t, cfg.DBPath)
+}
+
+func TestWiretapStatsIncludesCoverage(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "discrawl.db")
+	desktopPath := filepath.Join(dir, "discord")
+	require.NoError(t, os.MkdirAll(filepath.Join(desktopPath, "IndexedDB"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(desktopPath, "IndexedDB", "000001.log"), []byte(`{"id":"111111111111111111","type":1,"recipients":[{"id":"222222222222222222","username":"alice","global_name":"Alice"}]}
+{"id":"333333333333333333","channel_id":"111111111111111111","content":"coverage proof","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222222","username":"alice"}}`), 0o600))
+	cfg := config.Default()
+	cfg.DBPath = dbPath
+	cfg.Desktop.Path = desktopPath
+	cfg.Discord.TokenSource = "none"
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "wiretap", "--stats", "--json"}, &out, &bytes.Buffer{}))
+	var progress struct {
+		Import   discorddesktop.Stats `json:"import"`
+		Coverage store.CoverageReport `json:"coverage"`
+		Delta    *store.CoverageDelta `json:"delta"`
+	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &progress))
+	require.Equal(t, 1, progress.Import.Messages)
+	require.Equal(t, 1, progress.Coverage.Totals.MessageCount)
+	require.Nil(t, progress.Delta)
+}
+
 func TestDiscordTUIRowsIncludePaneMetadata(t *testing.T) {
 	rows := discordTUIRows([]store.MessageRow{{
 		MessageID:       "m1",
@@ -3881,6 +3947,7 @@ func TestCommandUsageBranches(t *testing.T) {
 		{[]string{"--config", cfgPath, "wiretap", "extra"}, "wiretap takes flags only"},
 		{[]string{"--config", cfgPath, "wiretap", "--max-file-bytes", "0"}, "--max-file-bytes must be positive"},
 		{[]string{"--config", cfgPath, "wiretap", "--watch-every", "1ms"}, "--watch-every must be at least 1s"},
+		{[]string{"--config", cfgPath, "coverage", "extra"}, "coverage takes flags only"},
 		{[]string{"--config", cfgPath, "members"}, "members requires a subcommand"},
 		{[]string{"--config", cfgPath, "members", "search"}, "members search requires a query"},
 		{[]string{"--config", cfgPath, "members", "bogus"}, `unknown members subcommand "bogus"`},
@@ -3911,6 +3978,7 @@ func TestCommandHelpDoesNotOpenConfigOrStore(t *testing.T) {
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "search", "--help"},
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "messages", "--help"},
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "sql", "--help"},
+		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "coverage", "--help"},
 	} {
 		var stdout, stderr bytes.Buffer
 		require.NoError(t, Run(context.Background(), args, &stdout, &stderr), "args=%v", args)

@@ -58,6 +58,7 @@ See [`sql`](../commands/sql.html).
 ## See also
 
 - [`status`](../commands/status.html) - high-level archive status
+- [`coverage`](../commands/coverage.html) - per-guild/channel archive readiness and wiretap progress counters
 - [`diagnostics`](../commands/diagnostics.html) - SQLite integrity, WAL, freshness, and writer-lock state
 - [`channels`](../commands/channels.html) - channel directory
 - [`members`](../commands/members.html) - member directory

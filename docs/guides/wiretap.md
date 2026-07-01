@@ -44,9 +44,10 @@ discrawl wiretap --path "$HOME/Library/Application Support/discord"
 discrawl wiretap --dry-run
 discrawl wiretap --full-cache
 discrawl wiretap --watch-every 2m
+discrawl wiretap --watch-every 10s --stats --json
 ```
 
-`--watch-every` keeps the import running on a periodic loop. `--dry-run` reports what would be imported without writing anything.
+`--watch-every` keeps the import running on a periodic loop. `--dry-run` reports what would be imported without writing anything. `--stats` attaches a [`coverage`](../commands/coverage.html) snapshot to each pass and reports deltas after the first watched sample.
 
 ## Default desktop paths
 
@@ -57,5 +58,6 @@ discrawl wiretap --watch-every 2m
 ## See also
 
 - [`wiretap`](../commands/wiretap.html)
+- [`coverage`](../commands/coverage.html)
 - [`dms`](../commands/dms.html) - convenience layer over `@me`
 - [Sync sources](sync-sources.html)

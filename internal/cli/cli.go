@@ -285,6 +285,11 @@ func (r *runtime) dispatch(rest []string) error {
 		return r.withLocalStoreReadOnly(func() error { return r.runStatus(rest[1:]) })
 	case "diagnostics":
 		return r.withConfig(func() error { return r.runDiagnostics(rest[1:]) })
+	case "coverage":
+		if hasHelpFlag(rest[1:]) {
+			return printCommandUsage(r.stdout, []string{"coverage"})
+		}
+		return r.withLocalStoreReadOnly(func() error { return r.runCoverage(rest[1:]) })
 	case "report":
 		return r.withLocalStoreRead(true, func() error { return r.runReport(rest[1:]) })
 	case "publish":
