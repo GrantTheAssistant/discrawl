@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.11.6 - Unreleased
+
 ## 0.11.5 - 2026-07-09
 
 ### Maintenance
