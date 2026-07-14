@@ -554,6 +554,9 @@ func (r *runtime) withMessagesSyncServices(fn func() error) error {
 func (r *runtime) withServicesUpdateLockedOperation(withDiscord bool, updateMode shareUpdateMode, lockDB bool, operation string, fn func() error) error {
 	cfg, err := config.Load(r.configPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return configErr(fmt.Errorf("config file not found at %s; run `discrawl init`, pass `--config <path>`, or set %s", r.configPath, config.DefaultConfigEnv))
+		}
 		return configErr(err)
 	}
 	if err := config.EnsureRuntimeDirs(cfg); err != nil {

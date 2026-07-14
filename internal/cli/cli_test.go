@@ -4503,9 +4503,21 @@ func TestPrintJSONAndPlain(t *testing.T) {
 func TestWithServicesErrors(t *testing.T) {
 	t.Parallel()
 
-	rt := &runtime{ctx: context.Background(), configPath: filepath.Join(t.TempDir(), "missing.toml"), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	missingPath := filepath.Join(t.TempDir(), "missing.toml")
+	rt := &runtime{ctx: context.Background(), configPath: missingPath, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
 	err := rt.withServices(false, func() error { return nil })
 	require.Equal(t, 3, ExitCode(err))
+	require.ErrorContains(t, err, missingPath)
+	require.ErrorContains(t, err, "discrawl init")
+	require.ErrorContains(t, err, "--config")
+	require.ErrorContains(t, err, config.DefaultConfigEnv)
+
+	invalidPath := filepath.Join(t.TempDir(), "invalid.toml")
+	require.NoError(t, os.WriteFile(invalidPath, []byte("invalid = ["), 0o600))
+	rt = &runtime{ctx: context.Background(), configPath: invalidPath, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	err = rt.withServices(false, func() error { return nil })
+	require.Equal(t, 3, ExitCode(err))
+	require.NotContains(t, err.Error(), "discrawl init")
 
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	cfg := config.Default()
@@ -4533,6 +4545,24 @@ func TestWithServicesErrors(t *testing.T) {
 	}
 	err = rt.withServices(true, func() error { return nil })
 	require.Equal(t, 4, ExitCode(err))
+}
+
+func TestTailMissingConfigGuidance(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, "config")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv(config.DefaultConfigEnv, "")
+
+	err := Run(context.Background(), []string{"tail"}, &bytes.Buffer{}, &bytes.Buffer{})
+	require.Equal(t, 3, ExitCode(err))
+	require.ErrorContains(t, err, filepath.Join(configHome, "discrawl", "config.toml"))
+	require.ErrorContains(t, err, "discrawl init")
+	require.ErrorContains(t, err, "--config")
+	require.ErrorContains(t, err, config.DefaultConfigEnv)
 }
 
 func TestCommandUsageErrors(t *testing.T) {
