@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,7 +22,17 @@ const (
 	attachmentIndexMaxChars = 8 << 10
 )
 
-var attachmentHTTPClient = &http.Client{Timeout: 5 * time.Second}
+var attachmentHTTPClient = &http.Client{
+	Timeout: 5 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 || !isAllowedAttachmentTextURL(req.URL.String()) {
+			return errors.New("attachment redirect denied")
+		}
+		return nil
+	},
+}
+
+var attachmentURLAllowed = isAllowedAttachmentTextURL
 
 func buildMessageMutation(
 	ctx context.Context,
@@ -170,6 +181,9 @@ func shouldFetchAttachmentText(attachment *discordgo.MessageAttachment) bool {
 }
 
 func fetchAttachmentText(ctx context.Context, url string) (string, error) {
+	if !attachmentURLAllowed(url) {
+		return "", errors.New("attachment URL denied")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -179,6 +193,9 @@ func fetchAttachmentText(ctx context.Context, url string) (string, error) {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.Request == nil || resp.Request.URL == nil || !attachmentURLAllowed(resp.Request.URL.String()) {
+		return "", errors.New("attachment response URL denied")
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", nil
 	}
@@ -205,6 +222,21 @@ func fetchAttachmentText(ctx context.Context, url string) (string, error) {
 		return "", nil
 	}
 	return clampText(string(body), attachmentIndexMaxChars), nil
+}
+
+func isAllowedAttachmentTextURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+		return false
+	}
+	if port := parsed.Port(); port != "" && port != "443" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "cdn.discordapp.com" && host != "media.discordapp.net" {
+		return false
+	}
+	return strings.HasPrefix(parsed.EscapedPath(), "/attachments/")
 }
 
 func isBlockedAttachment(filename, contentType string) bool {

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openclaw/discrawl/internal/store/storedb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1722,6 +1723,43 @@ func TestOpenMigratesLegacyQueryIndexes(t *testing.T) {
 	require.Contains(t, indexNames(t, ctx, s.DB(), "messages"), "idx_messages_created_id")
 	require.Contains(t, indexNames(t, ctx, s.DB(), "messages"), "idx_messages_channel_created_id")
 	require.Contains(t, indexNames(t, ctx, s.DB(), "mention_events"), "idx_mentions_guild_event")
+}
+
+func TestOpenMigratesV4ToV5WithoutLosingMessages(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl-v4.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	legacy := &Store{db: sqlDB, q: storedb.New(sqlDB), path: dbPath}
+	require.NoError(t, legacy.applyBaselineSchema(ctx))
+	require.NoError(t, legacy.applyQueryIndexMigration(ctx))
+	require.NoError(t, legacy.applyAttachmentMediaMigration(ctx))
+	require.NoError(t, legacy.applyFailureLedgerMigration(ctx))
+	require.NoError(t, legacy.setSchemaVersion(ctx, 4))
+	require.NoError(t, legacy.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "guild", RawJSON: `{}`}))
+	require.NoError(t, legacy.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "channel", RawJSON: `{}`}))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = sqlDB.ExecContext(ctx, `
+		insert into messages(id, guild_id, channel_id, message_type, created_at, content, normalized_content, raw_json, updated_at)
+		values('123', 'g1', 'c1', 0, ?, 'preserved', 'preserved', '{}', ?)
+	`, now, now)
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	s, err := Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	version, err := s.schemaVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 5, version)
+	var content string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select content from messages where id = '123'`).Scan(&content))
+	require.Equal(t, "preserved", content)
+	require.NoError(t, s.MarkMessageDeleted(ctx, "g1", "c1", "123", map[string]any{"migration": true}))
+	var tombstones int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_tombstones where message_id = '123'`).Scan(&tombstones))
+	require.Equal(t, 1, tombstones)
 }
 
 func indexNames(t *testing.T, ctx context.Context, db *sql.DB, table string) []string {

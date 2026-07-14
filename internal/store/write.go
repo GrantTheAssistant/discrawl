@@ -291,6 +291,12 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 
 func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, message MessageRecord, opts WriteOptions) error {
 	now := time.Now().UTC().Format(timeLayout)
+	var tombstoneAt string
+	if err := tx.QueryRowContext(ctx, `select deleted_at from message_tombstones where message_id = ?`, message.ID).Scan(&tombstoneAt); err == nil {
+		message.DeletedAt = tombstoneAt
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	var previousNormalized sql.NullString
 	previousErr := sql.ErrNoRows
 	jobExists := false
@@ -351,6 +357,41 @@ func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, mess
 }
 
 func (s *Store) MarkMessageDeleted(ctx context.Context, guildID, channelID, messageID string, payload any) error {
+	return s.MarkMessagesDeleted(ctx, guildID, channelID, []string{messageID}, payload)
+}
+
+// MarkMessagesDeleted persists a Discord bulk-delete event atomically. A
+// bounded retry handles SQLite's transient busy/locked result without turning
+// a partial bulk event into externally visible live messages.
+func (s *Store) MarkMessagesDeleted(ctx context.Context, guildID, channelID string, messageIDs []string, payload any) error {
+	if strings.TrimSpace(guildID) == "" || strings.TrimSpace(channelID) == "" || len(messageIDs) == 0 || len(messageIDs) > 100 {
+		return errors.New("invalid message deletion batch")
+	}
+	for _, messageID := range messageIDs {
+		if strings.TrimSpace(messageID) == "" {
+			return errors.New("invalid message deletion id")
+		}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	for attempt := 0; ; attempt++ {
+		err = s.markMessagesDeletedOnce(ctx, guildID, channelID, messageIDs, string(body))
+		if err == nil || attempt == 2 || !sqliteTransientBusy(err) {
+			return err
+		}
+		timer := time.NewTimer(time.Duration(20*(attempt+1)) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Store) markMessagesDeletedOnce(ctx context.Context, guildID, channelID string, messageIDs []string, payload string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -358,32 +399,47 @@ func (s *Store) MarkMessageDeleted(ctx context.Context, guildID, channelID, mess
 	defer rollback(tx)
 	qtx := s.q.WithTx(tx)
 	now := time.Now().UTC().Format(timeLayout)
-	if err := qtx.MarkMessageDeleted(ctx, storedb.MarkMessageDeletedParams{
-		DeletedAt: sql.NullString{String: now, Valid: true},
-		UpdatedAt: now,
-		ID:        messageID,
-	}); err != nil {
-		return err
-	}
-	if rowID, ok := messageFTSRowID(messageID); ok {
-		if _, err := tx.ExecContext(ctx, `delete from message_fts where rowid = ? or message_id = ?`, rowID, messageID); err != nil {
+	for _, messageID := range messageIDs {
+		if _, err := tx.ExecContext(ctx, `
+			insert into message_tombstones(message_id, guild_id, channel_id, deleted_at)
+			values(?, ?, ?, ?)
+			on conflict(message_id) do update set
+				guild_id = excluded.guild_id,
+				channel_id = excluded.channel_id,
+				deleted_at = min(message_tombstones.deleted_at, excluded.deleted_at)
+		`, messageID, guildID, channelID, now); err != nil {
+			return err
+		}
+		if err := qtx.MarkMessageDeleted(ctx, storedb.MarkMessageDeletedParams{
+			DeletedAt: sql.NullString{String: now, Valid: true}, UpdatedAt: now, ID: messageID,
+		}); err != nil {
+			return err
+		}
+		if rowID, ok := messageFTSRowID(messageID); ok {
+			if _, err := tx.ExecContext(ctx, `delete from message_fts where rowid = ? or message_id = ?`, rowID, messageID); err != nil {
+				return err
+			}
+		}
+		if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, messageID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `delete from embedding_jobs where message_id = ?`, messageID); err != nil {
+			return err
+		}
+		if err := appendEventTx(ctx, qtx, guildID, channelID, messageID, "delete", payload); err != nil {
 			return err
 		}
 	}
-	if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, messageID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `delete from embedding_jobs where message_id = ?`, messageID); err != nil {
-		return err
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	if err := appendEventTx(ctx, qtx, guildID, channelID, messageID, "delete", string(body)); err != nil {
-		return err
-	}
 	return tx.Commit()
+}
+
+func sqliteTransientBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy") ||
+		strings.Contains(message, "sqlite_busy") || strings.Contains(message, "sqlite_locked")
 }
 
 func (s *Store) AppendMessageEvent(ctx context.Context, guildID, channelID, messageID, eventType string, payload any) error {

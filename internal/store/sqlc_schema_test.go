@@ -41,6 +41,7 @@ func TestSQLCSchemaMirrorsRuntimeTables(t *testing.T) {
 		"messages",
 		"message_events",
 		"message_attachments",
+		"message_tombstones",
 		"mention_events",
 		"sync_state",
 		"embedding_jobs",

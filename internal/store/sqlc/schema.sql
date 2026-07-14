@@ -90,6 +90,22 @@ create table message_attachments (
 	updated_at text not null
 );
 
+create table message_tombstones (
+	message_id text primary key,
+	guild_id text not null,
+	channel_id text not null,
+	deleted_at text not null
+);
+
+create index idx_message_tombstones_scope
+on message_tombstones(guild_id, channel_id, message_id);
+
+create index idx_message_tombstones_projection
+on message_tombstones(guild_id, deleted_at, message_id);
+
+create index idx_messages_projection
+on messages(guild_id, updated_at, id);
+
 create table mention_events (
 	event_id integer primary key autoincrement,
 	message_id text not null,

@@ -34,17 +34,18 @@ const (
 var ErrNoCompatibleEmbeddings = errors.New("no compatible message embeddings for provider/model/input version; run discrawl embed --rebuild")
 
 type SemanticSearchOptions struct {
-	QueryVector   []float32
-	Provider      string
-	Model         string
-	InputVersion  string
-	Dimensions    int
-	VectorBackend string
-	GuildIDs      []string
-	Channel       string
-	Author        string
-	Limit         int
-	IncludeEmpty  bool
+	QueryVector    []float32
+	Provider       string
+	Model          string
+	InputVersion   string
+	Dimensions     int
+	VectorBackend  string
+	GuildIDs       []string
+	Channel        string
+	ChannelIDExact string
+	Author         string
+	Limit          int
+	IncludeEmpty   bool
 }
 
 func (s *Store) GetSyncState(ctx context.Context, scope string) (string, error) {
@@ -81,7 +82,10 @@ func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]Searc
 			args = append(args, guildID)
 		}
 	}
-	if strings.TrimSpace(opts.Channel) != "" {
+	if strings.TrimSpace(opts.ChannelIDExact) != "" {
+		clauses = append(clauses, "message_fts.channel_id = ?")
+		args = append(args, opts.ChannelIDExact)
+	} else if strings.TrimSpace(opts.Channel) != "" {
 		clauses = append(clauses, "(message_fts.channel_id = ? or message_fts.channel_name like ?)")
 		args = append(args, opts.Channel, "%"+opts.Channel+"%")
 	}
@@ -203,7 +207,10 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 			args = append(args, guildID)
 		}
 	}
-	if strings.TrimSpace(opts.Channel) != "" {
+	if strings.TrimSpace(opts.ChannelIDExact) != "" {
+		clauses = append(clauses, "m.channel_id = ?")
+		args = append(args, opts.ChannelIDExact)
+	} else if strings.TrimSpace(opts.Channel) != "" {
 		clauses = append(clauses, "(m.channel_id = ? or c.name like ?)")
 		args = append(args, opts.Channel, "%"+opts.Channel+"%")
 	}
@@ -587,7 +594,10 @@ func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]Searc
 			args = append(args, guildID)
 		}
 	}
-	if strings.TrimSpace(opts.Channel) != "" {
+	if strings.TrimSpace(opts.ChannelIDExact) != "" {
+		clauses = append(clauses, "m.channel_id = ?")
+		args = append(args, opts.ChannelIDExact)
+	} else if strings.TrimSpace(opts.Channel) != "" {
 		clauses = append(clauses, "(m.channel_id = ? or c.name like ?)")
 		args = append(args, opts.Channel, "%"+opts.Channel+"%")
 	}

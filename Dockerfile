@@ -13,6 +13,9 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-s -w -X github.com/openclaw/discrawl/internal/cli.version=${VERSION}" \
     -o /out/discrawl ./cmd/discrawl
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags="-s -w" \
+    -o /out/discrawl-api ./cmd/discrawl-api
 
 FROM alpine:${ALPINE_VERSION}
 RUN apk add --no-cache ca-certificates git openssh-client tzdata \
@@ -27,6 +30,7 @@ ENV HOME=/home/discrawl \
 VOLUME ["/data"]
 WORKDIR /data
 COPY --from=build /out/discrawl /usr/local/bin/discrawl
+COPY --from=build /out/discrawl-api /usr/local/bin/discrawl-api
 USER discrawl
 ENTRYPOINT ["discrawl"]
 CMD ["--help"]

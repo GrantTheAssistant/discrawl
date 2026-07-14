@@ -17,7 +17,7 @@ const (
 	timeLayout         = "2006-01-02T15:04:05.000000000Z07:00"
 	messageFTSVersion  = "2"
 	memberFTSVersion   = "1"
-	storeSchemaVersion = 4
+	storeSchemaVersion = 5
 )
 
 var ErrSchemaVersionMismatch = errors.New("database schema version mismatch")
@@ -44,12 +44,13 @@ type Status struct {
 }
 
 type SearchOptions struct {
-	Query        string
-	GuildIDs     []string
-	Channel      string
-	Author       string
-	Limit        int
-	IncludeEmpty bool
+	Query          string
+	GuildIDs       []string
+	Channel        string
+	ChannelIDExact string
+	Author         string
+	Limit          int
+	IncludeEmpty   bool
 }
 
 type SearchResult struct {
@@ -199,6 +200,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.setSchemaVersion(ctx, 4); err != nil {
 			return err
 		}
+		currentVersion = 4
+	}
+	if currentVersion < 5 {
+		if err := s.applyMessageTombstoneMigration(ctx); err != nil {
+			return err
+		}
+		if err := s.setSchemaVersion(ctx, 5); err != nil {
+			return err
+		}
 	}
 	if version, err := s.schemaVersion(ctx); err != nil {
 		return err
@@ -214,6 +224,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.applyFailureLedgerMigration(ctx); err != nil {
 		return err
 	}
+	if err := s.applyMessageTombstoneMigration(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureFTSRowIDs(ctx); err != nil {
 		return err
 	}
@@ -224,6 +237,49 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Store) applyMessageTombstoneMigration(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		create table if not exists message_tombstones (
+			message_id text primary key,
+			guild_id text not null,
+			channel_id text not null,
+			deleted_at text not null
+		)
+		;
+		create index if not exists idx_message_tombstones_scope
+		on message_tombstones(guild_id, channel_id, message_id)
+		;
+		create index if not exists idx_message_tombstones_projection
+		on message_tombstones(guild_id, deleted_at, message_id)
+		;
+		create index if not exists idx_messages_projection
+		on messages(guild_id, updated_at, id)
+		;
+		create trigger if not exists apply_message_tombstone_after_insert
+		after insert on messages
+		when new.deleted_at is null and exists(
+			select 1 from message_tombstones t where t.message_id = new.id
+		)
+		begin
+			update messages set deleted_at = (
+				select deleted_at from message_tombstones t where t.message_id = new.id
+			) where id = new.id;
+		end
+		;
+		create trigger if not exists apply_message_tombstone_after_update
+		after update on messages
+		when new.deleted_at is null and exists(
+			select 1 from message_tombstones t where t.message_id = new.id
+		)
+		begin
+			update messages set deleted_at = (
+				select deleted_at from message_tombstones t where t.message_id = new.id
+			) where id = new.id;
+		end
+	`)
+	return err
 }
 
 func (s *Store) RebuildSearchIndexes(ctx context.Context) error {

@@ -51,7 +51,15 @@ func Fetch(ctx context.Context, s *store.Store, opts FetchOptions) (FetchStats, 
 		opts.MaxBytes = DefaultMaxBytes
 	}
 	if opts.HTTPClient == nil {
-		opts.HTTPClient = &http.Client{Timeout: 30 * time.Second}
+		opts.HTTPClient = &http.Client{
+			Timeout: 30 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 3 || !isAllowedAttachmentURL(req.URL.String()) {
+					return errors.New("attachment redirect denied")
+				}
+				return nil
+			},
+		}
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -234,6 +242,11 @@ func fetchURL(ctx context.Context, opts FetchOptions, attachment store.Attachmen
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// Validate the final URL even for an injected client with its own redirect
+	// policy. This closes allowed-CDN -> metadata/private-host redirects.
+	if resp.Request == nil || resp.Request.URL == nil || !isAllowedAttachmentURL(resp.Request.URL.String()) {
+		return fetchResult{}, errors.New("attachment response URL denied")
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fetchResult{}, fmt.Errorf("attachment fetch returned HTTP %d", resp.StatusCode)
 	}

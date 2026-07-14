@@ -125,6 +125,24 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 	require.Equal(t, "10", cursor)
 }
 
+func TestTailHandlerBulkDeletePersistsEveryTombstone(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	handler := &tailHandler{store: s}
+	require.NoError(t, handler.OnMessageDeleteBulk(ctx, &discordgo.MessageDeleteBulk{
+		GuildID: "g1", ChannelID: "c1", Messages: []string{"10", "11", "12"},
+	}))
+	_, rows, err := s.ReadOnlyQuery(ctx, `select message_id from message_tombstones order by message_id`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"10"}, {"11"}, {"12"}}, rows)
+	cursor, err := s.GetSyncState(ctx, "tail:last_event")
+	require.NoError(t, err)
+	require.Equal(t, "12", cursor)
+}
+
 func TestTailHandlerMessageUpdateFetchesFullMessageBeforeUpsert(t *testing.T) {
 	t.Parallel()
 

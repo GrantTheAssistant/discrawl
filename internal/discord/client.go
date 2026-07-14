@@ -16,6 +16,7 @@ type EventHandler interface {
 	OnMessageCreate(context.Context, *discordgo.Message) error
 	OnMessageUpdate(context.Context, *discordgo.Message) error
 	OnMessageDelete(context.Context, *discordgo.MessageDelete) error
+	OnMessageDeleteBulk(context.Context, *discordgo.MessageDeleteBulk) error
 	OnChannelUpsert(context.Context, *discordgo.Channel) error
 	OnMemberUpsert(context.Context, string, *discordgo.Member) error
 	OnMemberDelete(context.Context, string, string) error
@@ -239,6 +240,11 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	addHandler(func(_ *discordgo.Session, evt *discordgo.MessageDelete) {
 		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
 			return handler.OnMessageDelete(taskCtx, evt)
+		})
+	})
+	addHandler(func(_ *discordgo.Session, evt *discordgo.MessageDeleteBulk) {
+		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
+			return handler.OnMessageDeleteBulk(taskCtx, evt)
 		})
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.ChannelCreate) {

@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,9 +19,6 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 		attachmentTextEnabled: s.attachmentTextEnabled,
 		onReady:               s.tailReady,
 	}
-	if repairEvery <= 0 {
-		return s.client.Tail(ctx, handler)
-	}
 	tailCtx, cancelTail := context.WithCancel(ctx)
 	defer cancelTail()
 	var closeOnce sync.Once
@@ -34,8 +32,15 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 	go func() {
 		errCh <- s.client.Tail(tailCtx, handler)
 	}()
-	ticker := time.NewTicker(repairEvery)
-	defer ticker.Stop()
+	heartbeatTicker := time.NewTicker(30 * time.Second)
+	defer heartbeatTicker.Stop()
+	var repairC <-chan time.Time
+	var repairTicker *time.Ticker
+	if repairEvery > 0 {
+		repairTicker = time.NewTicker(repairEvery)
+		repairC = repairTicker.C
+		defer repairTicker.Stop()
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -45,7 +50,11 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 			return nil
 		case err := <-errCh:
 			return err
-		case <-ticker.C:
+		case <-heartbeatTicker.C:
+			if err := s.store.SetSyncState(ctx, "tail:heartbeat", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				s.logger.Warn("tail heartbeat failed", "err", err)
+			}
+		case <-repairC:
 			if _, err := s.Sync(ctx, SyncOptions{GuildIDs: guildIDs, Full: false, RepairReason: "tail_repair"}); err != nil {
 				s.logger.Warn("repair sync failed", "err", err)
 			}
@@ -62,10 +71,15 @@ type tailHandler struct {
 }
 
 func (t *tailHandler) OnTailReady(ctx context.Context) error {
-	if t.onReady == nil {
-		return nil
+	if t.store != nil {
+		if err := t.store.SetSyncState(ctx, "tail:heartbeat", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
-	return t.onReady(ctx)
+	if t.onReady != nil {
+		return t.onReady(ctx)
+	}
+	return nil
 }
 
 func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Message) error {
@@ -157,6 +171,9 @@ func isPartialMessageUpdate(msg *discordgo.Message) bool {
 }
 
 func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.MessageDelete) error {
+	if evt == nil || evt.Message == nil {
+		return nil
+	}
 	if !t.allowGuild(evt.GuildID) {
 		return nil
 	}
@@ -164,6 +181,26 @@ func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.Messag
 		return err
 	}
 	return t.store.SetSyncState(ctx, "tail:last_event", evt.ID)
+}
+
+func (t *tailHandler) OnMessageDeleteBulk(ctx context.Context, evt *discordgo.MessageDeleteBulk) error {
+	if evt == nil || !t.allowGuild(evt.GuildID) {
+		return nil
+	}
+	messageIDs := make([]string, 0, len(evt.Messages))
+	for _, messageID := range evt.Messages {
+		if strings.TrimSpace(messageID) == "" {
+			continue
+		}
+		messageIDs = append(messageIDs, messageID)
+	}
+	if len(messageIDs) == 0 {
+		return nil
+	}
+	if err := t.store.MarkMessagesDeleted(ctx, evt.GuildID, evt.ChannelID, messageIDs, map[string]any{"bulk": true}); err != nil {
+		return err
+	}
+	return t.store.SetSyncState(ctx, "tail:last_event", messageIDs[len(messageIDs)-1])
 }
 
 func (t *tailHandler) OnChannelUpsert(ctx context.Context, channel *discordgo.Channel) error {
