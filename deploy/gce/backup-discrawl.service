@@ -1,0 +1,21 @@
+[Unit]
+Description=Create a checked atomic Discrawl SQLite backup
+RequiresMountsFor=/var/lib/discrawl
+
+[Service]
+Type=oneshot
+User=discrawl-backup
+Group=discrawl
+EnvironmentFile=/etc/discrawl/backup.env
+ExecStart=/usr/local/sbin/backup-discrawl
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadOnlyPaths=/var/lib/discrawl/archive.db -/var/lib/discrawl/archive.db-wal -/var/lib/discrawl/archive.db-shm
+ReadWritePaths=/var/lib/discrawl/backups
+UMask=0077

@@ -1,0 +1,31 @@
+[Unit]
+Description=Discrawl private archive API and Firestore projector
+After=network-online.target discrawl-tail.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/discrawl
+
+[Service]
+Type=simple
+User=discrawl-api
+Group=discrawl
+Environment=GOMEMLIMIT=280MiB
+ExecStart=/usr/local/bin/discrawl-api --config /etc/discrawl/archive-api.json
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryHigh=280M
+MemoryMax=400M
+ReadOnlyPaths=/var/lib/discrawl/archive.db -/var/lib/discrawl/archive.db-wal -/var/lib/discrawl/archive.db-shm
+ReadWritePaths=/var/lib/discrawl/projection
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

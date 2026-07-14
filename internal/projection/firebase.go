@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -97,14 +97,20 @@ func (s *FirebaseSink) ApplyMessages(ctx context.Context, bindings []Binding, me
 		if !ok || message.GuildID != binding.GuildID {
 			continue
 		}
+		if !validSnowflake(message.MessageID) || !validSnowflake(message.GuildID) || !validSnowflake(message.ChannelID) {
+			return 0, errors.New("projection message contains invalid Discord scope")
+		}
 		selected = append(selected, projected{binding: binding, message: message})
 	}
 	if len(selected) == 0 {
 		return 0, nil
 	}
-	refs := make([]*firestore.DocumentRef, len(selected))
+	refs := make([]*firestore.DocumentRef, 0, len(selected)*2)
 	for i := range selected {
-		refs[i] = s.messageRef(selected[i].message.MessageID)
+		refs = append(refs, s.messageRef(selected[i].message.MessageID))
+	}
+	for i := range selected {
+		refs = append(refs, s.tombstoneRef(selected[i].message.MessageID))
 	}
 	selectedBindings := map[string]struct{}{}
 	for _, item := range selected {
@@ -112,6 +118,7 @@ func (s *FirebaseSink) ApplyMessages(ctx context.Context, bindings []Binding, me
 	}
 	changed := 0
 	err := s.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		attemptChanged := 0
 		snaps, err := tx.GetAll(refs)
 		if err != nil {
 			return err
@@ -122,14 +129,27 @@ func (s *FirebaseSink) ApplyMessages(ctx context.Context, bindings []Binding, me
 				existing = snaps[i].Data()
 			}
 			candidate := projectionDocument(item.binding, item.message, existing)
+			ledger := map[string]any{}
+			if snaps[len(selected)+i].Exists() {
+				ledger = snaps[len(selected)+i].Data()
+				if stringField(ledger, "guildId") != item.message.GuildID ||
+					stringField(ledger, "channelId") != item.message.ChannelID {
+					return errors.New("durable tombstone scope mismatch")
+				}
+				if _, ok := firestoreTime(ledger["deletedAt"]); !ok {
+					return errors.New("durable tombstone has invalid deletion time")
+				}
+			}
+			candidate = preserveTerminalDelete(candidate, existing, ledger)
 			if mapsEqual(existing, candidate) {
 				continue
 			}
 			if err := tx.Set(refs[i], candidate, firestore.MergeAll); err != nil {
 				return err
 			}
-			changed++
+			attemptChanged++
 		}
+		changed = attemptChanged
 		return nil
 	})
 	if err != nil {
@@ -145,62 +165,70 @@ func (s *FirebaseSink) ApplyMessages(ctx context.Context, bindings []Binding, me
 }
 
 func (s *FirebaseSink) ApplyTombstones(ctx context.Context, bindings []Binding, tombstones []store.ProjectionTombstone) (int, error) {
-	byTarget := bindingTargets(bindings)
-	type selectedTombstone struct {
-		binding Binding
-		row     store.ProjectionTombstone
-	}
-	selected := make([]selectedTombstone, 0, len(tombstones))
-	for _, row := range tombstones {
-		binding, ok := byTarget[row.ChannelID]
-		if ok && row.GuildID == binding.GuildID {
-			selected = append(selected, selectedTombstone{binding: binding, row: row})
-		}
-	}
-	if len(selected) == 0 {
+	_ = bindings // Deletes intentionally outlive the active binding snapshot.
+	if len(tombstones) == 0 {
 		return 0, nil
 	}
-	refs := make([]*firestore.DocumentRef, len(selected))
-	for i := range selected {
-		refs[i] = s.messageRef(selected[i].row.MessageID)
+	for _, row := range tombstones {
+		if !validSnowflake(row.MessageID) || !validSnowflake(row.GuildID) || !validSnowflake(row.ChannelID) || row.DeletedAt.IsZero() {
+			return 0, errors.New("projection tombstone contains invalid Discord scope or deletion time")
+		}
+	}
+	refs := make([]*firestore.DocumentRef, 0, len(tombstones)*2)
+	for i := range tombstones {
+		refs = append(refs, s.messageRef(tombstones[i].MessageID))
+	}
+	for i := range tombstones {
+		refs = append(refs, s.tombstoneRef(tombstones[i].MessageID))
 	}
 	selectedBindings := map[string]struct{}{}
-	for _, item := range selected {
-		selectedBindings[item.binding.ID] = struct{}{}
-	}
 	changed := 0
 	err := s.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		attemptChanged := 0
+		attemptBindings := map[string]struct{}{}
 		snaps, err := tx.GetAll(refs)
 		if err != nil {
 			return err
 		}
-		for i, item := range selected {
-			// A marker-only delete blanks an existing website-origin projection,
-			// but never creates an identity-free row for an unknown message.
+		for i, row := range tombstones {
+			ledgerExisting := map[string]any{}
+			if snaps[len(tombstones)+i].Exists() {
+				ledgerExisting = snaps[len(tombstones)+i].Data()
+			}
+			ledger, ledgerChanged, err := durableTombstoneDocument(ledgerExisting, row)
+			if err != nil {
+				return err
+			}
+			if ledgerChanged {
+				if err := tx.Set(refs[len(tombstones)+i], ledger); err != nil {
+					return err
+				}
+				attemptChanged++
+			}
+			// The append-only ledger is written even when no projected message or
+			// active binding exists. This prevents an older SQLite restore from
+			// resurrecting a post-backup Discord deletion.
 			if !snaps[i].Exists() {
 				continue
 			}
 			existing := snaps[i].Data()
-			candidate := cloneMap(existing)
-			candidate["discordMessageId"] = item.row.MessageID
-			candidate["discordSortKey"] = snowflakeSortKey(item.row.MessageID)
-			candidate["bindingId"] = item.binding.ID
-			candidate["guildId"] = item.binding.GuildID
-			candidate["channelId"] = item.binding.ChannelID
-			candidate["threadId"] = item.binding.ThreadID
-			candidate["content"] = ""
-			candidate["attachments"] = []map[string]any{}
-			candidate["deleted"] = true
-			candidate["deletedAt"] = item.row.DeletedAt
-			candidate["updatedAt"] = item.row.DeletedAt
+			candidate, bindingID, ok := tombstoneDocument(existing, row)
+			if !ok {
+				continue
+			}
+			if validBindingID(bindingID) {
+				attemptBindings[bindingID] = struct{}{}
+			}
 			if mapsEqual(existing, candidate) {
 				continue
 			}
 			if err := tx.Set(refs[i], candidate, firestore.MergeAll); err != nil {
 				return err
 			}
-			changed++
+			attemptChanged++
 		}
+		changed = attemptChanged
+		selectedBindings = attemptBindings
 		return nil
 	})
 	if err != nil {
@@ -212,6 +240,138 @@ func (s *FirebaseSink) ApplyTombstones(ctx context.Context, bindings []Binding, 
 	return changed, nil
 }
 
+// SanitizeAttachmentURLs exhaustively walks the tenant's projected messages in
+// stable document-ID order. The query chooses the page, then the transaction
+// re-reads every document before updating it so a concurrent metadata change is
+// retried instead of overwritten. Product writers remove these fields before
+// this sweep is started, closing the race behind the persistent cursor.
+func (s *FirebaseSink) SanitizeAttachmentURLs(ctx context.Context, afterID string, limit int) (string, int, bool, error) {
+	if limit < 1 || limit > 250 || !validAttachmentSweepCursor(afterID) {
+		return afterID, 0, false, errors.New("invalid attachment URL sanitation cursor or limit")
+	}
+	query := s.fs.Collection("orgs").Doc(s.orgID).Collection("chatMessages").
+		OrderBy(firestore.DocumentID, firestore.Asc).Limit(limit)
+	if afterID != "" {
+		query = query.StartAfter(afterID)
+	}
+	snaps, err := query.Documents(ctx).GetAll()
+	if err != nil {
+		return afterID, 0, false, err
+	}
+	if len(snaps) == 0 {
+		return afterID, 0, true, nil
+	}
+	refs := make([]*firestore.DocumentRef, len(snaps))
+	for i := range snaps {
+		refs[i] = snaps[i].Ref
+	}
+	changed := 0
+	if err := s.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		attemptChanged := 0
+		current, err := tx.GetAll(refs)
+		if err != nil {
+			return err
+		}
+		for i := range current {
+			if !current[i].Exists() {
+				continue
+			}
+			attachments, ok := current[i].Data()["attachments"]
+			if !ok {
+				continue
+			}
+			sanitized, scrubbed := sanitizeProjectedAttachments(attachments)
+			if !scrubbed {
+				continue
+			}
+			if err := tx.Update(refs[i], []firestore.Update{{Path: "attachments", Value: sanitized}}); err != nil {
+				return err
+			}
+			attemptChanged++
+		}
+		changed = attemptChanged
+		return nil
+	}); err != nil {
+		return afterID, 0, false, err
+	}
+	next := snaps[len(snaps)-1].Ref.ID
+	return next, changed, len(snaps) < limit, nil
+}
+
+func validAttachmentSweepCursor(value string) bool {
+	return len(value) <= 1500 && !strings.Contains(value, "/")
+}
+
+func sanitizeProjectedAttachments(raw any) (any, bool) {
+	urlKey := func(key string) bool {
+		return key == "url" || key == "proxyUrl" || key == "proxy_url" || key == "proxyURL"
+	}
+	var sanitize func(any) (any, bool)
+	sanitize = func(value any) (any, bool) {
+		switch typed := value.(type) {
+		case []any:
+			out := append([]any(nil), typed...)
+			changed := false
+			for i := range typed {
+				var scrubbed bool
+				out[i], scrubbed = sanitize(typed[i])
+				changed = changed || scrubbed
+			}
+			return out, changed
+		case []map[string]any:
+			out := append([]map[string]any(nil), typed...)
+			changed := false
+			for i := range typed {
+				sanitized, scrubbed := sanitize(typed[i])
+				out[i] = sanitized.(map[string]any)
+				changed = changed || scrubbed
+			}
+			return out, changed
+		case map[string]any:
+			out := cloneMap(typed)
+			changed := false
+			for key, child := range typed {
+				if urlKey(key) {
+					delete(out, key)
+					changed = true
+					continue
+				}
+				sanitized, scrubbed := sanitize(child)
+				if scrubbed {
+					out[key] = sanitized
+					changed = true
+				}
+			}
+			return out, changed
+		default:
+			return value, false
+		}
+	}
+	return sanitize(raw)
+}
+
+func tombstoneDocument(existing map[string]any, row store.ProjectionTombstone) (map[string]any, string, bool) {
+	guildID := stringField(existing, "guildId")
+	channelID := stringField(existing, "channelId")
+	threadID := stringField(existing, "threadId")
+	targetID := channelID
+	if threadID != "" {
+		targetID = threadID
+	}
+	if guildID != row.GuildID || targetID != row.ChannelID {
+		return nil, "", false
+	}
+	candidate := cloneMap(existing)
+	candidate["discordMessageId"] = row.MessageID
+	candidate["discordSortKey"] = snowflakeSortKey(row.MessageID)
+	candidate["content"] = ""
+	candidate["attachments"] = []map[string]any{}
+	candidate["deleted"] = true
+	candidate["deletedAt"] = row.DeletedAt
+	candidate["updatedAt"] = row.DeletedAt
+	return candidate, stringField(existing, "bindingId"), true
+}
+
 func (s *FirebaseSink) Status(ctx context.Context, status Status) error {
 	_, err := s.fs.Collection("orgs").Doc(s.orgID).Collection("chatRuntime").Doc("discrawlProjection").Set(ctx, status, firestore.MergeAll)
 	return err
@@ -219,6 +379,10 @@ func (s *FirebaseSink) Status(ctx context.Context, status Status) error {
 
 func (s *FirebaseSink) messageRef(id string) *firestore.DocumentRef {
 	return s.fs.Collection("orgs").Doc(s.orgID).Collection("chatMessages").Doc(id)
+}
+
+func (s *FirebaseSink) tombstoneRef(id string) *firestore.DocumentRef {
+	return s.fs.Collection("orgs").Doc(s.orgID).Collection("chatTombstones").Doc(id)
 }
 
 func (s *FirebaseSink) writeTicks(ctx context.Context, bindingIDs map[string]struct{}) error {
@@ -286,7 +450,89 @@ func projectionDocument(binding Binding, message store.ProjectionMessage, existi
 			}
 		}
 	}
-	return doc
+	return preserveTerminalDelete(doc, existing, nil)
+}
+
+func preserveTerminalDelete(candidate, existing, ledger map[string]any) map[string]any {
+	terminal := false
+	var deletedAt any
+	if existing["deleted"] == true {
+		terminal = true
+		deletedAt = existing["deletedAt"]
+		if deletedAt == nil {
+			deletedAt = existing["updatedAt"]
+		}
+		if deletedAt == nil {
+			deletedAt = candidate["updatedAt"]
+		}
+	}
+	if ledger != nil {
+		if value, ok := ledger["deletedAt"]; ok {
+			terminal = true
+			if deletedAt == nil || firestoreTimeBefore(value, deletedAt) {
+				deletedAt = value
+			}
+		}
+	}
+	if !terminal {
+		return candidate
+	}
+	candidate["content"] = ""
+	candidate["attachments"] = []map[string]any{}
+	candidate["deleted"] = true
+	candidate["deletedAt"] = deletedAt
+	if existingUpdated, ok := existing["updatedAt"]; ok {
+		candidate["updatedAt"] = existingUpdated
+	}
+	return candidate
+}
+
+func durableTombstoneDocument(existing map[string]any, row store.ProjectionTombstone) (map[string]any, bool, error) {
+	if !validSnowflake(row.MessageID) || !validSnowflake(row.GuildID) || !validSnowflake(row.ChannelID) || row.DeletedAt.IsZero() {
+		return nil, false, errors.New("invalid durable tombstone scope or deletion time")
+	}
+	if len(existing) > 0 && (stringField(existing, "guildId") != row.GuildID || stringField(existing, "channelId") != row.ChannelID) {
+		return nil, false, errors.New("durable tombstone scope mismatch")
+	}
+	deletedAt := row.DeletedAt.UTC()
+	if len(existing) > 0 {
+		current, ok := firestoreTime(existing["deletedAt"])
+		if !ok {
+			return nil, false, errors.New("durable tombstone has invalid deletion time")
+		}
+		if current.Before(deletedAt) {
+			deletedAt = current
+		}
+	}
+	candidate := map[string]any{
+		"discordMessageId": row.MessageID,
+		"guildId":          row.GuildID,
+		"channelId":        row.ChannelID,
+		"deletedAt":        deletedAt,
+	}
+	return candidate, !reflect.DeepEqual(existing, candidate), nil
+}
+
+func firestoreTimeBefore(left, right any) bool {
+	l, lok := firestoreTime(left)
+	r, rok := firestoreTime(right)
+	return lok && rok && l.Before(r)
+}
+
+func firestoreTime(value any) (time.Time, bool) {
+	switch typed := value.(type) {
+	case time.Time:
+		return typed.UTC(), !typed.IsZero()
+	case *time.Time:
+		if typed != nil && !typed.IsZero() {
+			return typed.UTC(), true
+		}
+	case string:
+		if parsed, err := time.Parse(time.RFC3339Nano, typed); err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func projectionAttachments(rows []store.ArchiveAttachment) []map[string]any {
@@ -295,26 +541,17 @@ func projectionAttachments(rows []store.ArchiveAttachment) []map[string]any {
 		if len(out) >= 10 {
 			break
 		}
-		attachmentURL := safeHTTPSURL(row.URL)
-		if attachmentURL == "" {
+		id := strings.TrimSpace(row.ID)
+		filename := strings.TrimSpace(row.Filename)
+		if id == "" || filename == "" {
 			continue
 		}
 		out = append(out, map[string]any{
-			"id": row.ID, "filename": row.Filename, "contentType": strings.ToLower(row.ContentType),
-			"size": row.Size, "url": attachmentURL, "proxyUrl": safeHTTPSURL(row.ProxyURL),
+			"id": id, "filename": filename, "contentType": strings.ToLower(strings.TrimSpace(row.ContentType)),
+			"size": row.Size,
 		})
 	}
 	return out
-}
-
-func safeHTTPSURL(raw string) string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Port() != "" ||
-		(parsed.Hostname() != "cdn.discordapp.com" && parsed.Hostname() != "media.discordapp.net") ||
-		!strings.HasPrefix(parsed.EscapedPath(), "/attachments/") {
-		return ""
-	}
-	return parsed.String()
 }
 
 func projectionFingerprint(doc map[string]any) string {

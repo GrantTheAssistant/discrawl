@@ -116,7 +116,10 @@ func (s *Store) scanProjectionRows(ctx context.Context, rows *sql.Rows, capacity
 	for i := range messages {
 		base[i] = messages[i].ArchiveMessage
 	}
-	if err := s.attachArchiveMessageFiles(ctx, base, true); err != nil {
+	// Projection only needs stable attachment descriptors. Signed Discord CDN
+	// URLs are hydrated transiently by the authenticated product API and must
+	// never enter Firestore.
+	if err := s.attachArchiveMessageFiles(ctx, base, false); err != nil {
 		return nil, err
 	}
 	for i := range messages {

@@ -87,16 +87,20 @@ func (b *tokenBucket) allow(now time.Time) bool {
 }
 
 type Server struct {
-	cfg          Config
-	logger       *slog.Logger
-	store        *store.Store
-	verifier     tokenVerifier
-	queryTimeout time.Duration
-	staleAfter   time.Duration
-	semaphore    chan struct{}
-	rateLimit    tokenBucket
-	metrics      metrics
-	now          func() time.Time
+	cfg             Config
+	logger          *slog.Logger
+	store           *store.Store
+	verifier        tokenVerifier
+	queryTimeout    time.Duration
+	staleAfter      time.Duration
+	semaphore       chan struct{}
+	authSemaphore   chan struct{}
+	healthSemaphore chan struct{}
+	rateLimit       tokenBucket
+	authRateLimit   tokenBucket
+	healthRateLimit tokenBucket
+	metrics         metrics
+	now             func() time.Time
 }
 
 func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
@@ -121,8 +125,12 @@ func newServer(cfg Config, logger *slog.Logger, verifier tokenVerifier) (*Server
 	return &Server{
 		cfg: cfg, logger: logger, store: archiveStore, verifier: verifier,
 		queryTimeout: cfg.queryDuration(), staleAfter: cfg.staleDuration(),
-		semaphore: make(chan struct{}, cfg.MaxConcurrentQueries), now: time.Now,
-		rateLimit: tokenBucket{rate: float64(cfg.RequestsPerSecond), capacity: float64(cfg.RequestBurst)},
+		semaphore:     make(chan struct{}, cfg.MaxConcurrentQueries),
+		authSemaphore: make(chan struct{}, cfg.MaxConcurrentQueries), now: time.Now,
+		healthSemaphore: make(chan struct{}, 1),
+		rateLimit:       tokenBucket{rate: float64(cfg.RequestsPerSecond), capacity: float64(cfg.RequestBurst)},
+		authRateLimit:   tokenBucket{rate: float64(cfg.RequestsPerSecond), capacity: float64(cfg.RequestBurst)},
+		healthRateLimit: tokenBucket{rate: 5, capacity: 10},
 	}, nil
 }
 
@@ -159,13 +167,39 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeSmallJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	case "/readyz":
+		if !s.healthRateLimit.allow(s.now()) {
+			s.writeError(w, http.StatusTooManyRequests, "rate_limited")
+			return
+		}
+		select {
+		case s.healthSemaphore <- struct{}{}:
+			defer func() { <-s.healthSemaphore }()
+		default:
+			s.writeError(w, http.StatusServiceUnavailable, "health_busy")
+			return
+		}
 		s.handleReady(w, r)
 		return
 	case "/metrics":
 		s.handleMetrics(w, r)
 		return
 	}
-	if !s.authenticate(r) {
+	if !s.authRateLimit.allow(s.now()) {
+		s.metrics.rateLimited.Add(1)
+		w.Header().Set("Retry-After", "1")
+		s.writeError(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
+	select {
+	case s.authSemaphore <- struct{}{}:
+	default:
+		s.metrics.busy.Add(1)
+		s.writeError(w, http.StatusServiceUnavailable, "auth_busy")
+		return
+	}
+	authenticated := s.authenticate(r)
+	<-s.authSemaphore
+	if !authenticated {
 		s.metrics.authFailures.Add(1)
 		s.writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -273,7 +307,7 @@ func (s *Server) handleSearch(ctx context.Context, w http.ResponseWriter, r *htt
 	if len([]byte(author)) > 100 {
 		return fmt.Errorf("%w: author exceeds 100 bytes", store.ErrArchiveInvalidRequest)
 	}
-	results, err := s.store.SearchMessages(ctx, store.SearchOptions{
+	results, err := s.store.SearchArchiveMessages(ctx, store.SearchOptions{
 		Query: query, GuildIDs: []string{s.cfg.GuildID}, ChannelIDExact: channel, Author: author, Limit: limit,
 	})
 	if err != nil {

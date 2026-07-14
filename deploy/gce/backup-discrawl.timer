@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Discrawl SQLite backup
+
+[Timer]
+OnCalendar=*-*-* 04:17:00 UTC
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

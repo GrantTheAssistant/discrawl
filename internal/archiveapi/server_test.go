@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,13 @@ const (
 type fixedVerifier struct {
 	claims tokenClaims
 	err    error
+}
+
+type countingVerifier struct{ calls atomic.Int64 }
+
+func (v *countingVerifier) Verify(context.Context, string, string) (tokenClaims, error) {
+	v.calls.Add(1)
+	return tokenClaims{}, errors.New("invalid token")
 }
 
 func (v fixedVerifier) Verify(context.Context, string, string) (tokenClaims, error) {
@@ -164,6 +172,19 @@ func TestAPIBoundsRequestURIRequestBodyRateConcurrencyAndResponse(t *testing.T) 
 		require.Equal(t, http.StatusRequestEntityTooLarge, response.Code)
 		require.NotContains(t, response.Body.String(), strings.Repeat("x", 100))
 	})
+}
+
+func TestInvalidTokenFloodIsThrottledBeforeRepeatedVerification(t *testing.T) {
+	cfg := testConfig(seedAPIDatabase(t, 0))
+	cfg.RequestsPerSecond, cfg.RequestBurst = 1, 1
+	verifier := &countingVerifier{}
+	server := newTestServer(t, cfg, verifier)
+	first, second := httptest.NewRecorder(), httptest.NewRecorder()
+	server.Handler().ServeHTTP(first, apiRequest(http.MethodGet, "/v1/status"))
+	server.Handler().ServeHTTP(second, apiRequest(http.MethodGet, "/v1/status"))
+	require.Equal(t, http.StatusUnauthorized, first.Code)
+	require.Equal(t, http.StatusTooManyRequests, second.Code)
+	require.Equal(t, int64(1), verifier.calls.Load())
 }
 
 func TestAPIFailsClosedWithoutExactChannelScopeAndHasNoChannelCatalog(t *testing.T) {

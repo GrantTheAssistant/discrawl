@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -93,6 +94,36 @@ func TestArchiveAndProjectionNeverRenderNormalizedAttachmentTextAsBody(t *testin
 	require.Empty(t, projected[0].Content)
 }
 
+func TestArchiveExposesOnlyStrictDiscordAttachmentURLs(t *testing.T) {
+	ctx := context.Background()
+	s := openArchiveServiceStore(t)
+	id := "66666666666666664"
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{{
+		Record: archiveRecord(id, testChannelA, "files"),
+		Attachments: []AttachmentRecord{
+			{AttachmentID: "77777777777777770", MessageID: id, GuildID: testGuildA, ChannelID: testChannelA,
+				Filename: "good.txt", URL: "https://cdn.discordapp.com/attachments/1/2/good.txt?hm=signed", ProxyURL: "https://media.discordapp.net/attachments/1/2/good.txt"},
+			{AttachmentID: "77777777777777771", MessageID: id, GuildID: testGuildA, ChannelID: testChannelA,
+				Filename: "evil.txt", URL: "https://evil.example/attachments/1/2/evil.txt", ProxyURL: "https://user@cdn.discordapp.com/attachments/1/2/evil.txt"},
+			{AttachmentID: "77777777777777772", MessageID: id, GuildID: testGuildA, ChannelID: testChannelA,
+				Filename: "ported.txt", URL: "https://cdn.discordapp.com:443/attachments/1/2/ported.txt", ProxyURL: "https://cdn.discordapp.com/not-attachments/ported.txt"},
+		},
+	}}))
+
+	page, err := s.ListArchiveMessages(ctx, ArchivePageOptions{
+		GuildID: testGuildA, ChannelID: testChannelA, Limit: 10, ExposeAttachmentURLs: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, page.Messages, 1)
+	require.Len(t, page.Messages[0].Attachments, 3)
+	require.Equal(t, "https://cdn.discordapp.com/attachments/1/2/good.txt?hm=signed", page.Messages[0].Attachments[0].URL)
+	require.Equal(t, "https://media.discordapp.net/attachments/1/2/good.txt", page.Messages[0].Attachments[0].ProxyURL)
+	require.Empty(t, page.Messages[0].Attachments[1].URL)
+	require.Empty(t, page.Messages[0].Attachments[1].ProxyURL)
+	require.Empty(t, page.Messages[0].Attachments[2].URL)
+	require.Empty(t, page.Messages[0].Attachments[2].ProxyURL)
+}
+
 func TestDeleteBeforeCreateRemainsTombstonedAndUnsearchable(t *testing.T) {
 	ctx := context.Background()
 	s := openArchiveServiceStore(t)
@@ -116,6 +147,86 @@ func TestDeleteBeforeCreateRemainsTombstonedAndUnsearchable(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, tombstones, 1)
 	require.Equal(t, id, tombstones[0].MessageID)
+}
+
+func TestUpsertDeletedMessageCreatesDurableProjectionTombstone(t *testing.T) {
+	ctx := context.Background()
+	s := openArchiveServiceStore(t)
+	id := "66666666666666663"
+	record := archiveRecord(id, testChannelA, "snapshot body")
+	record.DeletedAt = "2026-07-14T12:00:00.1Z"
+	require.NoError(t, s.UpsertMessage(ctx, record))
+
+	rows, err := s.ListProjectionTombstones(ctx, testGuildA, time.Time{}, "", 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, id, rows[0].MessageID)
+	require.Equal(t, "2026-07-14T12:00:00.100000000Z", rows[0].DeletedAt.Format(timeLayout))
+
+	resurrection := archiveRecord(id, testChannelA, "must remain deleted")
+	require.NoError(t, s.UpsertMessage(ctx, resurrection))
+	page, err := s.ListArchiveMessages(ctx, ArchivePageOptions{GuildID: testGuildA, ChannelID: testChannelA, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Messages, 1)
+	require.True(t, page.Messages[0].Deleted)
+	require.Empty(t, page.Messages[0].Content)
+}
+
+func TestMarkerOnlyTombstoneAppearsInArchivePage(t *testing.T) {
+	ctx := context.Background()
+	s := openArchiveServiceStore(t)
+	id := "66666666666666673"
+	require.NoError(t, s.MarkMessageDeleted(ctx, testGuildA, testChannelA, id, map[string]any{"bulk": true}))
+	page, err := s.ListArchiveMessages(ctx, ArchivePageOptions{GuildID: testGuildA, ChannelID: testChannelA, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Messages, 1)
+	require.Equal(t, id, page.Messages[0].MessageID)
+	require.True(t, page.Messages[0].Deleted)
+	require.Empty(t, page.Messages[0].Content)
+	require.Empty(t, page.Messages[0].Attachments)
+}
+
+func TestArchivePaginationMergesMessagesAndMarkerOnlyTombstones(t *testing.T) {
+	ctx := context.Background()
+	s := openArchiveServiceStore(t)
+	for _, id := range []string{"66666666666666660", "66666666666666670"} {
+		require.NoError(t, s.UpsertMessage(ctx, archiveRecord(id, testChannelA, "body")))
+	}
+	require.NoError(t, s.MarkMessageDeleted(ctx, testGuildA, testChannelA, "66666666666666665", map[string]any{"bulk": true}))
+	page, err := s.ListArchiveMessages(ctx, ArchivePageOptions{GuildID: testGuildA, ChannelID: testChannelA, Limit: 2})
+	require.NoError(t, err)
+	require.True(t, page.HasMore)
+	require.Equal(t, "66666666666666665", page.NextBeforeID)
+	require.Equal(t, []string{"66666666666666665", "66666666666666670"},
+		[]string{page.Messages[0].MessageID, page.Messages[1].MessageID})
+	next, err := s.ListArchiveMessages(ctx, ArchivePageOptions{
+		GuildID: testGuildA, ChannelID: testChannelA, BeforeID: page.NextBeforeID, Limit: 2,
+	})
+	require.NoError(t, err)
+	require.False(t, next.HasMore)
+	require.Len(t, next.Messages, 1)
+	require.Equal(t, "66666666666666660", next.Messages[0].MessageID)
+}
+
+func TestBulkDeleteRetriesTransientBusyWithoutPartialCommit(t *testing.T) {
+	ctx := context.Background()
+	s := openArchiveServiceStore(t)
+	attempts := 0
+	s.deleteAttemptHook = func(attempt, index int) error {
+		attempts = max(attempts, attempt+1)
+		if attempt == 0 && index == 0 {
+			return errors.New("SQLITE_BUSY: injected transient failure")
+		}
+		return nil
+	}
+	require.NoError(t, s.MarkMessagesDeleted(ctx, testGuildA, testChannelA,
+		[]string{"66666666666666671", "66666666666666672"}, map[string]any{"bulk": true}))
+	require.Equal(t, 2, attempts)
+	var tombstones, events int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_tombstones`).Scan(&tombstones))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events where event_type = 'delete'`).Scan(&events))
+	require.Equal(t, 2, tombstones)
+	require.Equal(t, 2, events)
 }
 
 func TestArchiveExactChannelSearchCannotMatchAnotherChannelName(t *testing.T) {

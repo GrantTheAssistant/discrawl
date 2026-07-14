@@ -291,12 +291,11 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 
 func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, message MessageRecord, opts WriteOptions) error {
 	now := time.Now().UTC().Format(timeLayout)
-	var tombstoneAt string
-	if err := tx.QueryRowContext(ctx, `select deleted_at from message_tombstones where message_id = ?`, message.ID).Scan(&tombstoneAt); err == nil {
-		message.DeletedAt = tombstoneAt
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	tombstoneAt, err := captureMessageTombstoneTx(ctx, tx, message)
+	if err != nil {
 		return err
 	}
+	message.DeletedAt = tombstoneAt
 	var previousNormalized sql.NullString
 	previousErr := sql.ErrNoRows
 	jobExists := false
@@ -356,6 +355,47 @@ func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, mess
 	return nil
 }
 
+func captureMessageTombstoneTx(ctx context.Context, tx *sql.Tx, message MessageRecord) (string, error) {
+	var existingGuild, existingChannel, existingRaw string
+	err := tx.QueryRowContext(ctx, `
+		select guild_id, channel_id, deleted_at from message_tombstones where message_id = ?
+	`, message.ID).Scan(&existingGuild, &existingChannel, &existingRaw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	var earliest time.Time
+	if err == nil {
+		if existingGuild != message.GuildID || existingChannel != message.ChannelID {
+			return "", errors.New("message tombstone scope mismatch")
+		}
+		earliest = parseTime(existingRaw)
+		if earliest.IsZero() {
+			return "", errors.New("invalid existing message tombstone timestamp")
+		}
+	}
+	if raw := strings.TrimSpace(message.DeletedAt); raw != "" {
+		candidate := parseTime(raw)
+		if candidate.IsZero() {
+			return "", errors.New("invalid message deletion timestamp")
+		}
+		if earliest.IsZero() || candidate.Before(earliest) {
+			earliest = candidate
+		}
+	}
+	if earliest.IsZero() {
+		return "", nil
+	}
+	normalized := earliest.UTC().Format(timeLayout)
+	if _, err := tx.ExecContext(ctx, `
+		insert into message_tombstones(message_id, guild_id, channel_id, deleted_at)
+		values(?, ?, ?, ?)
+		on conflict(message_id) do update set deleted_at = excluded.deleted_at
+	`, message.ID, message.GuildID, message.ChannelID, normalized); err != nil {
+		return "", err
+	}
+	return normalized, nil
+}
+
 func (s *Store) MarkMessageDeleted(ctx context.Context, guildID, channelID, messageID string, payload any) error {
 	return s.MarkMessagesDeleted(ctx, guildID, channelID, []string{messageID}, payload)
 }
@@ -377,7 +417,7 @@ func (s *Store) MarkMessagesDeleted(ctx context.Context, guildID, channelID stri
 		return err
 	}
 	for attempt := 0; ; attempt++ {
-		err = s.markMessagesDeletedOnce(ctx, guildID, channelID, messageIDs, string(body))
+		err = s.markMessagesDeletedOnce(ctx, guildID, channelID, messageIDs, string(body), attempt)
 		if err == nil || attempt == 2 || !sqliteTransientBusy(err) {
 			return err
 		}
@@ -391,7 +431,7 @@ func (s *Store) MarkMessagesDeleted(ctx context.Context, guildID, channelID stri
 	}
 }
 
-func (s *Store) markMessagesDeletedOnce(ctx context.Context, guildID, channelID string, messageIDs []string, payload string) error {
+func (s *Store) markMessagesDeletedOnce(ctx context.Context, guildID, channelID string, messageIDs []string, payload string, attempt int) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -399,7 +439,7 @@ func (s *Store) markMessagesDeletedOnce(ctx context.Context, guildID, channelID 
 	defer rollback(tx)
 	qtx := s.q.WithTx(tx)
 	now := time.Now().UTC().Format(timeLayout)
-	for _, messageID := range messageIDs {
+	for index, messageID := range messageIDs {
 		if _, err := tx.ExecContext(ctx, `
 			insert into message_tombstones(message_id, guild_id, channel_id, deleted_at)
 			values(?, ?, ?, ?)
@@ -428,6 +468,11 @@ func (s *Store) markMessagesDeletedOnce(ctx context.Context, guildID, channelID 
 		}
 		if err := appendEventTx(ctx, qtx, guildID, channelID, messageID, "delete", payload); err != nil {
 			return err
+		}
+		if s.deleteAttemptHook != nil {
+			if err := s.deleteAttemptHook(attempt, index); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()

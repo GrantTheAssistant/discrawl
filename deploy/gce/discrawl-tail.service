@@ -1,0 +1,40 @@
+[Unit]
+Description=Discrawl Discord tail and repair worker
+After=network-online.target systemd-resolved.service
+Wants=network-online.target systemd-resolved.service
+RequiresMountsFor=/var/lib/discrawl
+
+[Service]
+Type=simple
+User=discrawl-tail
+Group=discrawl
+EnvironmentFile=/etc/discrawl/bot-token.env
+Environment=GOMEMLIMIT=500MiB
+ExecStartPre=/usr/bin/test -x /usr/bin/curl
+ExecStartPre=/usr/bin/getent ahosts discord.com
+ExecStartPre=/bin/sh -c '! /usr/bin/curl --noproxy "*" --fail --silent --show-error --max-time 2 -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token'
+ExecStartPre=/bin/sh -c '! /usr/bin/curl --noproxy "*" --fail --silent --show-error --max-time 2 -g -H "Metadata-Flavor: Google" "http://[::ffff:169.254.169.254]/computeMetadata/v1/instance/service-accounts/default/token"'
+ExecStartPre=/bin/sh -c '! /usr/bin/curl --noproxy "*" --fail --silent --show-error --max-time 2 -g -H "Metadata-Flavor: Google" "http://[fd20:ce::254]/computeMetadata/v1/instance/service-accounts/default/token"'
+ExecStart=/usr/local/bin/discrawl --config /etc/discrawl/config.toml tail --repair-every 6h
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+IPAddressDeny=169.254.169.254/32
+IPAddressDeny=::ffff:169.254.169.254/128
+IPAddressDeny=fd20:ce::254/128
+MemoryHigh=500M
+MemoryMax=650M
+ReadWritePaths=/var/lib/discrawl
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

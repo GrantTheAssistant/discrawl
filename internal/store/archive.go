@@ -2,11 +2,15 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/openclaw/discrawl/internal/discordcdn"
 )
 
 var ErrArchiveInvalidRequest = errors.New("invalid archive request")
@@ -172,6 +176,50 @@ func (s *Store) ListArchiveMessages(ctx context.Context, opts ArchivePageOptions
 		return ArchivePage{}, err
 	}
 
+	// Include delete-before-create/import markers in the same snowflake page.
+	// These identity-free tombstones let product overlays blank a retained
+	// Firestore body even when the canonical message row never existed locally.
+	tombstoneBoundary := ""
+	tombstoneArgs := []any{opts.GuildID, opts.ChannelID}
+	if opts.BeforeID != "" {
+		tombstoneBoundary = `and (length(t.message_id) < length(?) or (length(t.message_id) = length(?) and t.message_id < ?))`
+		tombstoneArgs = append(tombstoneArgs, opts.BeforeID, opts.BeforeID, opts.BeforeID)
+	}
+	tombstoneArgs = append(tombstoneArgs, opts.Limit+1)
+	tombstoneRows, err := s.db.QueryContext(ctx, `
+		select t.message_id, t.deleted_at
+		from message_tombstones t
+		where t.guild_id = ? and t.channel_id = ?
+		  and not exists(select 1 from messages m where m.id = t.message_id) `+tombstoneBoundary+`
+		order by length(t.message_id) desc, t.message_id desc
+		limit ?
+	`, tombstoneArgs...)
+	if err != nil {
+		return ArchivePage{}, err
+	}
+	for tombstoneRows.Next() {
+		var id, deleted string
+		if err := tombstoneRows.Scan(&id, &deleted); err != nil {
+			_ = tombstoneRows.Close()
+			return ArchivePage{}, err
+		}
+		deletedAt := parseTime(deleted)
+		desc = append(desc, ArchiveMessage{
+			MessageID: id, GuildID: opts.GuildID, ChannelID: opts.ChannelID,
+			AuthorName: "Discord User", CreatedAt: deletedAt, DeletedAt: deletedAt,
+			Deleted: true, Content: "", Attachments: []ArchiveAttachment{},
+		})
+	}
+	if err := tombstoneRows.Close(); err != nil {
+		return ArchivePage{}, err
+	}
+	sort.Slice(desc, func(i, j int) bool {
+		if len(desc[i].MessageID) != len(desc[j].MessageID) {
+			return len(desc[i].MessageID) > len(desc[j].MessageID)
+		}
+		return desc[i].MessageID > desc[j].MessageID
+	})
+
 	hasMore := len(desc) > opts.Limit
 	if hasMore {
 		desc = desc[:opts.Limit]
@@ -187,6 +235,30 @@ func (s *Store) ListArchiveMessages(ctx context.Context, opts ArchivePageOptions
 		page.NextBeforeID = desc[len(desc)-1].MessageID
 	}
 	return page, nil
+}
+
+// SearchArchiveMessages keeps normalized/enriched text available for matching
+// while rendering only the original Discord body to external callers.
+func (s *Store) SearchArchiveMessages(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
+	results, err := s.SearchMessages(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		var content string
+		if err := s.db.QueryRowContext(ctx, `
+			select coalesce(content, '') from messages
+			where id = ? and guild_id = ? and channel_id = ? and deleted_at is null
+		`, results[i].MessageID, results[i].GuildID, results[i].ChannelID).Scan(&content); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				results[i].Content = ""
+				continue
+			}
+			return nil, err
+		}
+		results[i].Content = content
+	}
+	return results, nil
 }
 
 func (s *Store) attachArchiveMessageFiles(ctx context.Context, messages []ArchiveMessage, exposeURLs bool) error {
@@ -225,6 +297,9 @@ func (s *Store) attachArchiveMessageFiles(ctx context.Context, messages []Archiv
 			if !exposeURLs {
 				attachment.URL = ""
 				attachment.ProxyURL = ""
+			} else {
+				attachment.URL = discordcdn.AttachmentURL(attachment.URL)
+				attachment.ProxyURL = discordcdn.AttachmentURL(attachment.ProxyURL)
 			}
 			messages[index].Attachments = append(messages[index].Attachments, attachment)
 		}

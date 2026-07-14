@@ -53,30 +53,38 @@ type Sink interface {
 	Bindings(context.Context, string) ([]Binding, error)
 	ApplyMessages(context.Context, []Binding, []store.ProjectionMessage) (int, error)
 	ApplyTombstones(context.Context, []Binding, []store.ProjectionTombstone) (int, error)
+	SanitizeAttachmentURLs(context.Context, string, int) (string, int, bool, error)
 	Status(context.Context, Status) error
 	Close() error
 }
 
 type State struct {
-	Version            int               `json:"version"`
-	Initialized        bool              `json:"initialized"`
-	MessageUpdatedAt   time.Time         `json:"message_updated_at"`
-	MessageID          string            `json:"message_id"`
-	TombstoneDeletedAt time.Time         `json:"tombstone_deleted_at"`
-	TombstoneMessageID string            `json:"tombstone_message_id"`
-	SeededBindings     map[string]string `json:"seeded_bindings,omitempty"`
-	RepairUpdatedAt    time.Time         `json:"repair_updated_at,omitempty"`
-	RepairMessageID    string            `json:"repair_message_id,omitempty"`
+	Version                    int               `json:"version"`
+	Initialized                bool              `json:"initialized"`
+	MessageUpdatedAt           time.Time         `json:"message_updated_at"`
+	MessageID                  string            `json:"message_id"`
+	TombstoneDeletedAt         time.Time         `json:"tombstone_deleted_at"`
+	TombstoneMessageID         string            `json:"tombstone_message_id"`
+	TombstoneSweepStarted      bool              `json:"tombstone_sweep_started,omitempty"`
+	TombstoneSweepComplete     bool              `json:"tombstone_sweep_complete,omitempty"`
+	AttachmentURLSweepCursor   string            `json:"attachment_url_sweep_cursor,omitempty"`
+	AttachmentURLSweepComplete bool              `json:"attachment_url_sweep_complete,omitempty"`
+	SeededBindings             map[string]string `json:"seeded_bindings,omitempty"`
+	RepairUpdatedAt            time.Time         `json:"repair_updated_at,omitempty"`
+	RepairMessageID            string            `json:"repair_message_id,omitempty"`
 }
 
 type Status struct {
-	State            string    `firestore:"state"`
-	LastSuccessAt    time.Time `firestore:"lastSuccessAt,omitempty"`
-	LastFailureAt    time.Time `firestore:"lastFailureAt"`
-	FailureCode      string    `firestore:"failureCode"`
-	BindingCount     int       `firestore:"bindingCount"`
-	ProjectedChanges int       `firestore:"projectedChanges"`
-	SchemaVersion    int       `firestore:"schemaVersion"`
+	State                      string    `firestore:"state"`
+	GuildID                    string    `firestore:"guildId"`
+	TombstoneSweepComplete     bool      `firestore:"tombstoneSweepComplete"`
+	AttachmentURLSweepComplete bool      `firestore:"attachmentUrlSweepComplete"`
+	LastSuccessAt              time.Time `firestore:"lastSuccessAt,omitempty"`
+	LastFailureAt              time.Time `firestore:"lastFailureAt"`
+	FailureCode                string    `firestore:"failureCode"`
+	BindingCount               int       `firestore:"bindingCount"`
+	ProjectedChanges           int       `firestore:"projectedChanges"`
+	SchemaVersion              int       `firestore:"schemaVersion"`
 }
 
 type Projector struct {
@@ -87,6 +95,7 @@ type Projector struct {
 	now             func() time.Time
 	state           State
 	bindings        []Binding
+	bindingsValid   bool
 	lastStatusAt    time.Time
 	lastStatusState string
 }
@@ -109,6 +118,15 @@ func New(cfg Config, archive Archive, sink Sink, logger *slog.Logger) (*Projecto
 	state, err := LoadState(cfg.StatePath)
 	if err != nil {
 		return nil, err
+	}
+	if state.Initialized && !state.TombstoneSweepStarted {
+		// Upgrade an early projection state that incorrectly started at "now".
+		// Restarting from zero is idempotent and closes the pre-cutover gap.
+		state.TombstoneDeletedAt, state.TombstoneMessageID = time.Time{}, ""
+		state.TombstoneSweepStarted = true
+		if err := SaveState(cfg.StatePath, state); err != nil {
+			return nil, err
+		}
 	}
 	return &Projector{cfg: cfg, archive: archive, sink: sink, logger: logger, now: time.Now, state: state}, nil
 }
@@ -155,6 +173,11 @@ func (p *Projector) Run(ctx context.Context) error {
 }
 
 func (p *Projector) refreshBindings(ctx context.Context) error {
+	// Bindings are the authorization/scope control plane. A failed refresh
+	// invalidates the snapshot so disabled or retargeted scopes cannot continue
+	// receiving rows during a control-plane outage.
+	p.bindings = nil
+	p.bindingsValid = false
 	opctx, cancel := p.operationContext(ctx)
 	bindings, err := p.sink.Bindings(opctx, p.cfg.GuildID)
 	cancel()
@@ -174,6 +197,7 @@ func (p *Projector) refreshBindings(ctx context.Context) error {
 	}
 	sort.Slice(bindings, func(i, j int) bool { return bindings[i].ID < bindings[j].ID })
 	p.bindings = bindings
+	p.bindingsValid = true
 	if p.state.Initialized && len(p.state.SeededBindings) > 0 {
 		active := make(map[string]struct{}, len(bindings))
 		for _, binding := range bindings {
@@ -197,7 +221,11 @@ func (p *Projector) seed(ctx context.Context) error {
 	started := p.now().UTC()
 	p.state = State{
 		Version: 1, Initialized: true, MessageUpdatedAt: started,
-		TombstoneDeletedAt: started, SeededBindings: map[string]string{},
+		// Deletions are never horizon-bounded: the global cursor exhaustively
+		// sweeps legacy tombstones after startup so disabled/pre-cutover bindings
+		// cannot retain a stale body in Firestore.
+		TombstoneDeletedAt: time.Time{}, TombstoneSweepStarted: true,
+		TombstoneSweepComplete: false, SeededBindings: map[string]string{},
 	}
 	changes, err := p.seedPendingBindings(ctx)
 	if err != nil {
@@ -206,7 +234,7 @@ func (p *Projector) seed(ctx context.Context) error {
 	if err := SaveState(p.cfg.StatePath, p.state); err != nil {
 		return err
 	}
-	return p.emitStatus(ctx, Status{State: "healthy", LastSuccessAt: p.now(), BindingCount: len(p.bindings), ProjectedChanges: changes, SchemaVersion: 1}, true)
+	return p.emitStatus(ctx, Status{State: "seeding", LastSuccessAt: p.now(), BindingCount: len(p.bindings), ProjectedChanges: changes, SchemaVersion: 2}, true)
 }
 
 func (p *Projector) seedPendingBindings(ctx context.Context) (int, error) {
@@ -255,7 +283,11 @@ func (p *Projector) seedPendingBindings(ctx context.Context) (int, error) {
 }
 
 func (p *Projector) projectDeltas(ctx context.Context) error {
+	if !p.bindingsValid {
+		return errors.New("projection bindings unavailable")
+	}
 	changes := 0
+	tombstoneExhausted := false
 	for batch := 0; batch < maxBatchesPerPass; batch++ {
 		opctx, cancel := p.operationContext(ctx)
 		rows, err := p.archive.ListProjectionMessages(opctx, p.cfg.GuildID, store.ProjectionCursor{
@@ -292,6 +324,7 @@ func (p *Projector) projectDeltas(ctx context.Context) error {
 			return err
 		}
 		if len(rows) == 0 {
+			tombstoneExhausted = true
 			break
 		}
 		opctx, cancel = p.operationContext(ctx)
@@ -307,13 +340,51 @@ func (p *Projector) projectDeltas(ctx context.Context) error {
 			return err
 		}
 		if len(rows) < p.cfg.BatchSize {
+			tombstoneExhausted = true
 			break
 		}
 	}
-	return p.emitStatus(ctx, Status{State: "healthy", LastSuccessAt: p.now(), BindingCount: len(p.bindings), ProjectedChanges: changes, SchemaVersion: 1}, false)
+	if tombstoneExhausted && !p.state.TombstoneSweepComplete {
+		p.state.TombstoneSweepComplete = true
+		if err := SaveState(p.cfg.StatePath, p.state); err != nil {
+			return err
+		}
+	}
+	if !p.state.AttachmentURLSweepComplete {
+		for batch := 0; batch < maxBatchesPerPass; batch++ {
+			opctx, cancel := p.operationContext(ctx)
+			next, changed, complete, err := p.sink.SanitizeAttachmentURLs(
+				opctx, p.state.AttachmentURLSweepCursor, p.cfg.BatchSize,
+			)
+			cancel()
+			if err != nil {
+				return err
+			}
+			changes += changed
+			if !complete && (next == "" || next == p.state.AttachmentURLSweepCursor) {
+				return errors.New("attachment URL sanitation sweep did not advance")
+			}
+			p.state.AttachmentURLSweepCursor = next
+			p.state.AttachmentURLSweepComplete = complete
+			if err := SaveState(p.cfg.StatePath, p.state); err != nil {
+				return err
+			}
+			if complete {
+				break
+			}
+		}
+	}
+	statusState := "seeding"
+	if p.state.TombstoneSweepComplete && p.state.AttachmentURLSweepComplete {
+		statusState = "healthy"
+	}
+	return p.emitStatus(ctx, Status{State: statusState, LastSuccessAt: p.now(), BindingCount: len(p.bindings), ProjectedChanges: changes, SchemaVersion: 2}, false)
 }
 
 func (p *Projector) repair(ctx context.Context) error {
+	if !p.bindingsValid {
+		return errors.New("projection bindings unavailable")
+	}
 	lookback := p.now().Add(-p.cfg.RepairLookback)
 	cursor := store.ProjectionCursor{UpdatedAt: p.state.RepairUpdatedAt, MessageID: p.state.RepairMessageID}
 	if cursor.UpdatedAt.IsZero() || cursor.UpdatedAt.Before(lookback) {
@@ -352,7 +423,7 @@ func (p *Projector) repair(ctx context.Context) error {
 
 func (p *Projector) reportFailure(ctx context.Context, code string) {
 	p.logger.Error("projection pass failed", "code", code)
-	_ = p.emitStatus(ctx, Status{State: "degraded", LastFailureAt: p.now(), FailureCode: code, BindingCount: len(p.bindings), SchemaVersion: 1}, false)
+	_ = p.emitStatus(ctx, Status{State: "degraded", LastFailureAt: p.now(), FailureCode: code, BindingCount: len(p.bindings), SchemaVersion: 2}, false)
 }
 
 func (p *Projector) operationContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -360,6 +431,9 @@ func (p *Projector) operationContext(parent context.Context) (context.Context, c
 }
 
 func (p *Projector) emitStatus(ctx context.Context, status Status, force bool) error {
+	status.GuildID = p.cfg.GuildID
+	status.TombstoneSweepComplete = p.state.TombstoneSweepComplete
+	status.AttachmentURLSweepComplete = p.state.AttachmentURLSweepComplete
 	now := p.now()
 	if !force && status.State == p.lastStatusState && !p.lastStatusAt.IsZero() && now.Sub(p.lastStatusAt) < p.cfg.StatusEvery {
 		return nil

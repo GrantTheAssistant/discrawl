@@ -1740,10 +1740,11 @@ func TestOpenMigratesV4ToV5WithoutLosingMessages(t *testing.T) {
 	require.NoError(t, legacy.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "guild", RawJSON: `{}`}))
 	require.NoError(t, legacy.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "channel", RawJSON: `{}`}))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	deletedAt := "2026-07-14T12:00:00Z"
 	_, err = sqlDB.ExecContext(ctx, `
-		insert into messages(id, guild_id, channel_id, message_type, created_at, content, normalized_content, raw_json, updated_at)
-		values('123', 'g1', 'c1', 0, ?, 'preserved', 'preserved', '{}', ?)
-	`, now, now)
+		insert into messages(id, guild_id, channel_id, message_type, created_at, content, normalized_content, raw_json, updated_at, deleted_at)
+		values('123', 'g1', 'c1', 0, ?, 'preserved', 'preserved', '{}', ?, ?)
+	`, now, now, deletedAt)
 	require.NoError(t, err)
 	require.NoError(t, sqlDB.Close())
 
@@ -1756,10 +1757,27 @@ func TestOpenMigratesV4ToV5WithoutLosingMessages(t *testing.T) {
 	var content string
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select content from messages where id = '123'`).Scan(&content))
 	require.Equal(t, "preserved", content)
-	require.NoError(t, s.MarkMessageDeleted(ctx, "g1", "c1", "123", map[string]any{"migration": true}))
 	var tombstones int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_tombstones where message_id = '123'`).Scan(&tombstones))
 	require.Equal(t, 1, tombstones)
+	rows, err := s.ListProjectionTombstones(ctx, "g1", time.Time{}, "", 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "123", rows[0].MessageID)
+	require.Equal(t, "2026-07-14T12:00:00.000000000Z", rows[0].DeletedAt.Format(timeLayout))
+	second, err := s.ListProjectionTombstones(ctx, "g1", rows[0].DeletedAt, rows[0].MessageID, 10)
+	require.NoError(t, err)
+	require.Empty(t, second)
+
+	_, err = s.DB().ExecContext(ctx, `update message_tombstones set deleted_at = '2026-07-14T12:00:00.1Z' where message_id = '123'`)
+	require.NoError(t, err)
+	require.NoError(t, s.applyMessageTombstoneMigration(ctx))
+	require.NoError(t, s.applyMessageTombstoneMigration(ctx))
+	var normalized string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select deleted_at from message_tombstones where message_id = '123'`).Scan(&normalized))
+	// The v4 message timestamp is earlier, so rerunning the migration restores
+	// the chronologically earliest normalized value.
+	require.Equal(t, "2026-07-14T12:00:00.000000000Z", normalized)
 }
 
 func indexNames(t *testing.T, ctx context.Context, db *sql.DB, table string) []string {
