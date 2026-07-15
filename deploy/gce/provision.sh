@@ -126,7 +126,7 @@ if str(d.get("location", "")).upper() != region:
 if str(d.get("projectNumber", d.get("project_number", ""))) != project:
     raise SystemExit("backup bucket project drift")
 PY
-gcloud storage buckets update "gs://${BACKUP_BUCKET}" --public-access-prevention=enforced --versioning \
+gcloud storage buckets update "gs://${BACKUP_BUCKET}" --pap --versioning \
   --soft-delete-duration=7d --retention-period=1d --lifecycle-file="${SCRIPT_DIR}/backup-lifecycle.json"
 gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
   --member="serviceAccount:${archive_sa}" --role=roles/storage.objectCreator \
