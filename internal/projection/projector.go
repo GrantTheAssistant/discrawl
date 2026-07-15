@@ -156,17 +156,17 @@ func (p *Projector) Run(ctx context.Context) error {
 			return nil
 		case <-bindings.C:
 			if err := p.refreshBindings(ctx); err != nil {
-				p.reportFailure(ctx, "bindings")
+				p.reportFailure(ctx, "bindings", err)
 			} else if _, err := p.seedPendingBindings(ctx); err != nil {
-				p.reportFailure(ctx, "seed")
+				p.reportFailure(ctx, "seed", err)
 			}
 		case <-repair.C:
 			if err := p.repair(ctx); err != nil {
-				p.reportFailure(ctx, "repair")
+				p.reportFailure(ctx, "repair", err)
 			}
 		case <-poll.C:
 			if err := p.projectDeltas(ctx); err != nil {
-				p.reportFailure(ctx, "delta")
+				p.reportFailure(ctx, "delta", err)
 			}
 		}
 	}
@@ -421,8 +421,8 @@ func (p *Projector) repair(ctx context.Context) error {
 	return nil
 }
 
-func (p *Projector) reportFailure(ctx context.Context, code string) {
-	p.logger.Error("projection pass failed", "code", code)
+func (p *Projector) reportFailure(ctx context.Context, code string, cause error) {
+	p.logger.Error("projection pass failed", "code", code, "error", cause)
 	_ = p.emitStatus(ctx, Status{State: "degraded", LastFailureAt: p.now(), FailureCode: code, BindingCount: len(p.bindings), SchemaVersion: 2}, false)
 }
 

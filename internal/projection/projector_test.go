@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -179,6 +180,19 @@ func TestEmptyPollsRespectStatusHeartbeatBudget(t *testing.T) {
 	now = now.Add(5 * time.Minute)
 	require.NoError(t, p.projectDeltas(context.Background()))
 	require.Equal(t, 1, sink.statusCalls)
+}
+
+func TestProjectionFailureLogIncludesUnderlyingCause(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	p, err := New(testConfig(t), &fakeArchive{}, &fakeSink{}, logger)
+	require.NoError(t, err)
+
+	p.reportFailure(context.Background(), "delta", errors.New("firestore transaction denied"))
+
+	require.Contains(t, logs.String(), `"msg":"projection pass failed"`)
+	require.Contains(t, logs.String(), `"code":"delta"`)
+	require.Contains(t, logs.String(), `"error":"firestore transaction denied"`)
 }
 
 func TestTombstoneSweepGatesHealthyStatusUntilExhausted(t *testing.T) {
