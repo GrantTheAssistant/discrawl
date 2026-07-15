@@ -143,7 +143,7 @@ fi
 }
 if ! gcloud compute resource-policies describe "${snapshot_policy}" --project="${PROJECT_ID}" --region="${REGION}" >/dev/null 2>&1; then
   gcloud compute resource-policies create snapshot-schedule "${snapshot_policy}" --project="${PROJECT_ID}" --region="${REGION}" \
-    --weekly-schedule=SUN --start-time=05:30 --max-retention-days=14 --on-source-disk-delete=keep-auto-snapshots
+    --weekly-schedule=sunday --start-time=05:30 --max-retention-days=14 --on-source-disk-delete=keep-auto-snapshots
 fi
 attached_policies="$(gcloud compute disks describe "${VM_NAME}-data" --project="${PROJECT_ID}" --zone="${ZONE}" --format='value(resourcePolicies.list())')"
 if [[ ",${attached_policies}," != *",${snapshot_policy},"* ]]; then

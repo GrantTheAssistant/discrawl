@@ -215,6 +215,9 @@ func TestIsolationAndRetentionContracts(t *testing.T) {
 		strings.Contains(provision, "--public-access-prevention=enforced") {
 		t.Error("backup bucket hardening must use the current argument-free gcloud --pap flag")
 	}
+	if !strings.Contains(provision, "--weekly-schedule=sunday") || strings.Contains(provision, "--weekly-schedule=SUN") {
+		t.Error("snapshot scheduling must use the current full gcloud weekday enum")
+	}
 	var lifecycle struct {
 		Rule []json.RawMessage `json:"rule"`
 	}
