@@ -536,6 +536,7 @@ type recordingHandler struct {
 	creates       int
 	updates       int
 	deletes       int
+	bulkDeletes   int
 	channels      int
 	memberUpserts int
 	memberDeletes int
@@ -559,6 +560,11 @@ func (r *recordingHandler) OnMessageUpdate(context.Context, *discordgo.Message) 
 
 func (r *recordingHandler) OnMessageDelete(context.Context, *discordgo.MessageDelete) error {
 	r.deletes++
+	return nil
+}
+
+func (r *recordingHandler) OnMessageDeleteBulk(context.Context, *discordgo.MessageDeleteBulk) error {
+	r.bulkDeletes++
 	return nil
 }
 
@@ -591,6 +597,10 @@ func (s *slowHandler) OnMessageUpdate(context.Context, *discordgo.Message) error
 }
 
 func (s *slowHandler) OnMessageDelete(context.Context, *discordgo.MessageDelete) error {
+	return nil
+}
+
+func (s *slowHandler) OnMessageDeleteBulk(context.Context, *discordgo.MessageDeleteBulk) error {
 	return nil
 }
 

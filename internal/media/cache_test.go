@@ -470,6 +470,21 @@ func TestMediaPathHelpers(t *testing.T) {
 	require.False(t, isAllowedAttachmentURL("https://user@cdn.discordapp.com/attachments/c/file.png"))
 }
 
+func TestFetchURLRejectsAllowedCDNRedirectToMetadataHost(t *testing.T) {
+	t.Parallel()
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		final, err := http.NewRequest(http.MethodGet, "http://169.254.169.254/computeMetadata/v1/", nil)
+		require.NoError(t, err)
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("secret")), Request: final,
+		}, nil
+	})}
+	_, err := fetchURL(context.Background(), FetchOptions{
+		CacheDir: t.TempDir(), MaxBytes: 1024, HTTPClient: client,
+	}, store.AttachmentRow{AttachmentID: "a1", Filename: "x.txt"}, "https://cdn.discordapp.com/attachments/c/x.txt")
+	require.ErrorContains(t, err, "response URL denied")
+}
+
 func TestMediaTargetNeedsWrite(t *testing.T) {
 	t.Parallel()
 

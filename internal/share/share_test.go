@@ -2275,6 +2275,17 @@ func TestLegacyManifestFileImportAndEmbeddingDecodeErrors(t *testing.T) {
 	require.NoError(t, tx.Rollback())
 }
 
+func TestValidateSnapshotRowRejectsMalformedDeletedAtBeforeImport(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, validateSnapshotRow("messages", map[string]any{"deleted_at": nil}))
+	require.NoError(t, validateSnapshotRow("messages", map[string]any{"deleted_at": ""}))
+	require.NoError(t, validateSnapshotRow("messages", map[string]any{"deleted_at": "2026-07-14T12:00:00.123456789Z"}))
+	require.ErrorContains(t, validateSnapshotRow("messages", map[string]any{"deleted_at": "not-a-timestamp"}), "must be RFC3339")
+	require.ErrorContains(t, validateSnapshotRow("messages", map[string]any{"deleted_at": json.Number("123")}), "must be a string or null")
+	require.NoError(t, validateSnapshotRow("guilds", map[string]any{"deleted_at": "not-a-timestamp"}))
+}
+
 func TestImportEmbeddingsRejectsUnsafeManifestFiles(t *testing.T) {
 	t.Parallel()
 

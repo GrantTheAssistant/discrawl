@@ -1,0 +1,51 @@
+version = 1
+default_guild_id = "%%DISCORD_GUILD_ID%%"
+guild_ids = ["%%DISCORD_GUILD_ID%%"]
+db_path = "/var/lib/discrawl/archive.db"
+cache_dir = "/var/lib/discrawl/cache"
+log_dir = "/var/lib/discrawl/logs"
+
+[discord]
+token_source = "env"
+token_env = "DISCORD_BOT_TOKEN"
+token_keyring_service = "discrawl"
+token_keyring_account = "discord_bot_token"
+
+[sync]
+source = "discord"
+concurrency = 2
+repair_every = "6h"
+full_history = true
+attachment_text = false
+attachment_media = false
+max_attachment_bytes = 10485760
+
+[desktop]
+path = "/var/empty"
+max_file_bytes = 67108864
+full_cache = false
+
+[search]
+default_mode = "fts"
+
+[search.embeddings]
+enabled = false
+provider = "openai"
+model = "text-embedding-3-small"
+api_key_env = "OPENAI_API_KEY"
+batch_size = 64
+
+[share]
+remote = ""
+repo_path = "/var/lib/discrawl/share"
+branch = "main"
+auto_update = false
+stale_after = "15m"
+media = false
+
+[remote]
+mode = "local"
+endpoint = ""
+archive = ""
+token_env = "DISCRAWL_REMOTE_TOKEN"
+stale_after = ""

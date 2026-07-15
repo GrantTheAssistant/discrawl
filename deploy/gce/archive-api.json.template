@@ -1,0 +1,31 @@
+{
+  "listen": "0.0.0.0:8787",
+  "db_path": "/var/lib/discrawl/archive.db",
+  "guild_id": "%%DISCORD_GUILD_ID%%",
+  "audience": "%%ARCHIVE_AUDIENCE%%",
+  "allowed_caller_service_account": "%%CLOUD_RUN_CALLER_SERVICE_ACCOUNT%%",
+  "allowed_source_cidr": "%%SERVERLESS_SUBNET_RANGE%%",
+  "query_timeout": "5s",
+  "max_concurrent_queries": 4,
+  "requests_per_second": 20,
+  "request_burst": 40,
+  "max_response_bytes": 1048576,
+  "max_request_uri_bytes": 4096,
+  "stale_after": "2h",
+  "expose_attachment_urls": false,
+  "projection": {
+    "enabled": true,
+    "project_id": "%%PROJECT_ID%%",
+    "org_id": "%%ORG_ID%%",
+    "poll_every": "2s",
+    "bindings_every": "5m",
+    "repair_every": "6h",
+    "repair_lookback": "24h",
+    "initial_lookback": "720h",
+    "operation_timeout": "15s",
+    "status_every": "10m",
+    "initial_rows_per_binding": 250,
+    "batch_size": 100,
+    "state_path": "/var/lib/discrawl/projection/state.json"
+  }
+}

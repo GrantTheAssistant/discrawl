@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openclaw/discrawl/internal/store/storedb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1669,6 +1670,22 @@ func TestOpenTightensDBFilePerms(t *testing.T) {
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
+func TestOpenAllowsExplicitDeploymentGroupRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows does not expose unix permission bits")
+	}
+
+	t.Setenv("DISCRAWL_DB_GROUP_READABLE", "1")
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := Open(context.Background(), dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+}
+
 func TestOpenCreatesQueryIndexes(t *testing.T) {
 	t.Parallel()
 
@@ -1722,6 +1739,92 @@ func TestOpenMigratesLegacyQueryIndexes(t *testing.T) {
 	require.Contains(t, indexNames(t, ctx, s.DB(), "messages"), "idx_messages_created_id")
 	require.Contains(t, indexNames(t, ctx, s.DB(), "messages"), "idx_messages_channel_created_id")
 	require.Contains(t, indexNames(t, ctx, s.DB(), "mention_events"), "idx_mentions_guild_event")
+}
+
+func TestOpenMigratesV4ToV5WithoutLosingMessages(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl-v4.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	legacy := &Store{db: sqlDB, q: storedb.New(sqlDB), path: dbPath}
+	require.NoError(t, legacy.applyBaselineSchema(ctx))
+	require.NoError(t, legacy.applyQueryIndexMigration(ctx))
+	require.NoError(t, legacy.applyAttachmentMediaMigration(ctx))
+	require.NoError(t, legacy.applyFailureLedgerMigration(ctx))
+	require.NoError(t, legacy.setSchemaVersion(ctx, 4))
+	require.NoError(t, legacy.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "guild", RawJSON: `{}`}))
+	require.NoError(t, legacy.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "channel", RawJSON: `{}`}))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	deletedAt := "2026-07-14T12:00:00Z"
+	_, err = sqlDB.ExecContext(ctx, `
+		insert into messages(id, guild_id, channel_id, message_type, created_at, content, normalized_content, raw_json, updated_at, deleted_at)
+		values('123', 'g1', 'c1', 0, ?, 'preserved', 'preserved', '{}', ?, ?)
+	`, now, now, deletedAt)
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	s, err := Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	version, err := s.schemaVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 5, version)
+	var content string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select content from messages where id = '123'`).Scan(&content))
+	require.Equal(t, "preserved", content)
+	var tombstones int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_tombstones where message_id = '123'`).Scan(&tombstones))
+	require.Equal(t, 1, tombstones)
+	rows, err := s.ListProjectionTombstones(ctx, "g1", time.Time{}, "", 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "123", rows[0].MessageID)
+	require.Equal(t, "2026-07-14T12:00:00.000000000Z", rows[0].DeletedAt.Format(timeLayout))
+	second, err := s.ListProjectionTombstones(ctx, "g1", rows[0].DeletedAt, rows[0].MessageID, 10)
+	require.NoError(t, err)
+	require.Empty(t, second)
+
+	_, err = s.DB().ExecContext(ctx, `update message_tombstones set deleted_at = '2026-07-14T12:00:00.1Z' where message_id = '123'`)
+	require.NoError(t, err)
+	require.NoError(t, s.applyMessageTombstoneMigration(ctx, true))
+	require.NoError(t, s.applyMessageTombstoneMigration(ctx, true))
+	var normalized string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select deleted_at from message_tombstones where message_id = '123'`).Scan(&normalized))
+	// The v4 message timestamp is earlier, so rerunning the migration restores
+	// the chronologically earliest normalized value.
+	require.Equal(t, "2026-07-14T12:00:00.000000000Z", normalized)
+}
+
+func TestOpenAtV5DoesNotRenormalizeDeletionLedger(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl-v5.db")
+
+	s, err := Open(ctx, dbPath)
+	require.NoError(t, err)
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "channel", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+		ID: "123", GuildID: "g1", ChannelID: "c1", CreatedAt: time.Now().UTC().Format(timeLayout),
+		Content: "private", NormalizedContent: "private", RawJSON: `{}`,
+	}))
+	require.NoError(t, s.MarkMessageDeleted(ctx, "g1", "c1", "123", map[string]any{}))
+	_, err = s.DB().ExecContext(ctx, `
+		create table migration_audit(n integer not null);
+		insert into migration_audit values(0);
+		create trigger audit_tombstone_update after update on message_tombstones
+		begin update migration_audit set n=n+1; end;
+	`)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+
+	s, err = Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	var rewrites int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select n from migration_audit`).Scan(&rewrites))
+	require.Zero(t, rewrites, "an already-v5 writable reopen must not rewrite the complete deletion ledger")
 }
 
 func indexNames(t *testing.T, ctx context.Context, db *sql.DB, table string) []string {

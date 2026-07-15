@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	crawlstore "github.com/openclaw/crawlkit/store"
@@ -17,15 +19,16 @@ const (
 	timeLayout         = "2006-01-02T15:04:05.000000000Z07:00"
 	messageFTSVersion  = "2"
 	memberFTSVersion   = "1"
-	storeSchemaVersion = 4
+	storeSchemaVersion = 5
 )
 
 var ErrSchemaVersionMismatch = errors.New("database schema version mismatch")
 
 type Store struct {
-	db   *sql.DB
-	q    *storedb.Queries
-	path string
+	db                *sql.DB
+	q                 *storedb.Queries
+	path              string
+	deleteAttemptHook func(attempt, index int) error
 }
 
 type Status struct {
@@ -44,12 +47,13 @@ type Status struct {
 }
 
 type SearchOptions struct {
-	Query        string
-	GuildIDs     []string
-	Channel      string
-	Author       string
-	Limit        int
-	IncludeEmpty bool
+	Query          string
+	GuildIDs       []string
+	Channel        string
+	ChannelIDExact string
+	Author         string
+	Limit          int
+	IncludeEmpty   bool
 }
 
 type SearchResult struct {
@@ -126,6 +130,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = base.Close()
 		return nil, err
 	}
+	if os.Getenv("DISCRAWL_DB_GROUP_READABLE") == "1" {
+		if err := os.Chmod(path, 0o640); err != nil {
+			_ = base.Close()
+			return nil, fmt.Errorf("make archive group-readable: %w", err)
+		}
+	}
 	return store, nil
 }
 
@@ -199,6 +209,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.setSchemaVersion(ctx, 4); err != nil {
 			return err
 		}
+		currentVersion = 4
+	}
+	if currentVersion < 5 {
+		if err := s.applyMessageTombstoneMigration(ctx, true); err != nil {
+			return err
+		}
+		if err := s.setSchemaVersion(ctx, 5); err != nil {
+			return err
+		}
 	}
 	if version, err := s.schemaVersion(ctx); err != nil {
 		return err
@@ -214,6 +233,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.applyFailureLedgerMigration(ctx); err != nil {
 		return err
 	}
+	if err := s.applyMessageTombstoneMigration(ctx, false); err != nil {
+		return err
+	}
 	if err := s.ensureFTSRowIDs(ctx); err != nil {
 		return err
 	}
@@ -224,6 +246,129 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Store) applyMessageTombstoneMigration(ctx context.Context, normalizeExisting bool) error {
+	if _, err := s.db.ExecContext(ctx, `
+		create table if not exists message_tombstones (
+			message_id text primary key,
+			guild_id text not null,
+			channel_id text not null,
+			deleted_at text not null
+		)
+		;
+		create index if not exists idx_message_tombstones_scope
+		on message_tombstones(guild_id, channel_id, message_id)
+		;
+		create index if not exists idx_message_tombstones_projection
+		on message_tombstones(guild_id, deleted_at, message_id)
+		;
+		create index if not exists idx_messages_projection
+		on messages(guild_id, updated_at, id)
+	`); err != nil {
+		return err
+	}
+	if normalizeExisting {
+		if err := s.normalizeMessageTombstones(ctx); err != nil {
+			return err
+		}
+	}
+	_, err := s.db.ExecContext(ctx, `
+		create trigger if not exists apply_message_tombstone_after_insert
+		after insert on messages
+		when new.deleted_at is null and exists(
+			select 1 from message_tombstones t where t.message_id = new.id
+		)
+		begin
+			update messages set deleted_at = (
+				select deleted_at from message_tombstones t where t.message_id = new.id
+			) where id = new.id;
+		end
+		;
+		create trigger if not exists apply_message_tombstone_after_update
+		after update on messages
+		when new.deleted_at is null and exists(
+			select 1 from message_tombstones t where t.message_id = new.id
+		)
+		begin
+			update messages set deleted_at = (
+				select deleted_at from message_tombstones t where t.message_id = new.id
+			) where id = new.id;
+		end
+	`)
+	return err
+}
+
+type migrationTombstone struct {
+	guildID   string
+	channelID string
+	deletedAt time.Time
+}
+
+// normalizeMessageTombstones makes chronological ordering independent of the
+// variable-width RFC3339 timestamps accepted by pre-v5 databases. It also
+// backfills deleted message rows in the same transaction, choosing the true
+// chronological minimum instead of SQLite's lexical min().
+func (s *Store) normalizeMessageTombstones(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	rows, err := tx.QueryContext(ctx, `
+		select message_id, guild_id, channel_id, deleted_at from message_tombstones
+		union all
+		select id, guild_id, channel_id, deleted_at from messages
+		where deleted_at is not null and trim(deleted_at) <> ''
+	`)
+	if err != nil {
+		return err
+	}
+	entries := map[string]migrationTombstone{}
+	for rows.Next() {
+		var messageID, guildID, channelID, raw string
+		if err := rows.Scan(&messageID, &guildID, &channelID, &raw); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		deletedAt := parseTime(strings.TrimSpace(raw))
+		if deletedAt.IsZero() {
+			_ = rows.Close()
+			return fmt.Errorf("invalid tombstone timestamp for message %s", messageID)
+		}
+		if previous, ok := entries[messageID]; ok {
+			if previous.guildID != guildID || previous.channelID != channelID {
+				_ = rows.Close()
+				return fmt.Errorf("tombstone scope mismatch for message %s", messageID)
+			}
+			if deletedAt.Before(previous.deletedAt) {
+				previous.deletedAt = deletedAt
+				entries[messageID] = previous
+			}
+			continue
+		}
+		entries[messageID] = migrationTombstone{guildID: guildID, channelID: channelID, deletedAt: deletedAt}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for messageID, entry := range entries {
+		if _, err := tx.ExecContext(ctx, `
+			insert into message_tombstones(message_id, guild_id, channel_id, deleted_at)
+			values(?, ?, ?, ?)
+			on conflict(message_id) do update set
+				guild_id = excluded.guild_id,
+				channel_id = excluded.channel_id,
+				deleted_at = excluded.deleted_at
+		`, messageID, entry.guildID, entry.channelID, entry.deletedAt.UTC().Format(timeLayout)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RebuildSearchIndexes(ctx context.Context) error {

@@ -11,6 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
+
 func TestBuildMessageMutationIncludesAttachmentTextAndMentions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("stack trace line one\nstack trace line two"))
@@ -18,9 +22,12 @@ func TestBuildMessageMutationIncludesAttachmentTextAndMentions(t *testing.T) {
 	defer server.Close()
 
 	previousClient := attachmentHTTPClient
+	previousPolicy := attachmentURLAllowed
 	attachmentHTTPClient = server.Client()
+	attachmentURLAllowed = func(raw string) bool { return raw == server.URL }
 	t.Cleanup(func() {
 		attachmentHTTPClient = previousClient
+		attachmentURLAllowed = previousPolicy
 	})
 
 	now := time.Now().UTC()
@@ -93,6 +100,30 @@ func TestShouldFetchAttachmentText(t *testing.T) {
 	require.False(t, shouldFetchAttachmentText(&discordgo.MessageAttachment{Filename: "photo.png", ContentType: "image/png"}))
 }
 
+func TestAttachmentTextURLPolicyAndFinalRedirect(t *testing.T) {
+	require.True(t, isAllowedAttachmentTextURL("https://cdn.discordapp.com/attachments/c/file.txt"))
+	require.True(t, isAllowedAttachmentTextURL("https://media.discordapp.net/attachments/c/file.txt"))
+	for _, raw := range []string{
+		"http://cdn.discordapp.com/attachments/c/file.txt",
+		"https://cdn.discordapp.com:444/attachments/c/file.txt",
+		"https://cdn.discordapp.com.evil.test/attachments/c/file.txt",
+		"https://169.254.169.254/attachments/c/file.txt",
+		"https://cdn.discordapp.com/not-attachments/file.txt",
+	} {
+		require.False(t, isAllowedAttachmentTextURL(raw), raw)
+	}
+
+	previous := attachmentHTTPClient
+	attachmentHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		final, err := http.NewRequest(http.MethodGet, "http://169.254.169.254/computeMetadata/v1/", nil)
+		require.NoError(t, err)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody, Request: final}, nil
+	})}
+	t.Cleanup(func() { attachmentHTTPClient = previous })
+	_, err := fetchAttachmentText(context.Background(), "https://cdn.discordapp.com/attachments/c/file.txt")
+	require.ErrorContains(t, err, "response URL denied")
+}
+
 func TestBuildMessageMutationSkipsBinaryResponseEvenWhenAttachmentLooksTextual(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -101,9 +132,12 @@ func TestBuildMessageMutationSkipsBinaryResponseEvenWhenAttachmentLooksTextual(t
 	defer server.Close()
 
 	previousClient := attachmentHTTPClient
+	previousPolicy := attachmentURLAllowed
 	attachmentHTTPClient = server.Client()
+	attachmentURLAllowed = func(raw string) bool { return raw == server.URL }
 	t.Cleanup(func() {
 		attachmentHTTPClient = previousClient
+		attachmentURLAllowed = previousPolicy
 	})
 
 	mutation, err := buildMessageMutation(context.Background(), &discordgo.Message{
@@ -134,9 +168,12 @@ func TestBuildMessageMutationSkipsOversizedAttachmentResponses(t *testing.T) {
 	defer server.Close()
 
 	previousClient := attachmentHTTPClient
+	previousPolicy := attachmentURLAllowed
 	attachmentHTTPClient = server.Client()
+	attachmentURLAllowed = func(raw string) bool { return raw == server.URL }
 	t.Cleanup(func() {
 		attachmentHTTPClient = previousClient
+		attachmentURLAllowed = previousPolicy
 	})
 
 	mutation, err := buildMessageMutation(context.Background(), &discordgo.Message{

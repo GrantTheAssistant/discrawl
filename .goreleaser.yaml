@@ -26,10 +26,31 @@ builds:
       - linux_arm64
       - windows_amd64
       - windows_arm64
+  - id: discrawl-api
+    main: ./cmd/discrawl-api
+    binary: discrawl-api
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+    hooks:
+      post:
+        - cmd: ./scripts/codesign-release-binary.sh "{{ .Target }}" "{{ .Path }}"
+          output: true
+          env:
+            - DISCRAWL_CODESIGN_REQUIRED={{ if .IsSnapshot }}0{{ else }}1{{ end }}
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+      - windows_arm64
 
 archives:
   - ids:
       - discrawl
+      - discrawl-api
     formats:
       - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
