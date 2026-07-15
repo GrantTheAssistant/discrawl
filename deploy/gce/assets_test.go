@@ -158,7 +158,7 @@ func TestIsolationAndRetentionContracts(t *testing.T) {
 	provision := readAsset(t, "provision.sh")
 	verify := readAsset(t, "verify-deployment.sh")
 	for _, expected := range []string{
-		"--size=30GB", "--no-address", "--deletion-protection", "--vpc-egress", // vpc marker is checked below in product repos
+		"--size=30GB", "private-network-ip=${ARCHIVE_INTERNAL_IP},no-address", "--deletion-protection", "--vpc-egress", // vpc marker is checked below in product repos
 		"roles/storage.objectCreator", "roles/secretmanager.secretAccessor", "e2-medium", "e2-micro",
 	} {
 		if expected == "--vpc-egress" {
@@ -217,6 +217,18 @@ func TestIsolationAndRetentionContracts(t *testing.T) {
 	}
 	if !strings.Contains(provision, "--weekly-schedule=sunday") || strings.Contains(provision, "--weekly-schedule=SUN") {
 		t.Error("snapshot scheduling must use the current full gcloud weekday enum")
+	}
+	for _, expected := range []string{
+		"gcloud compute instances delete-access-config", "public_access_rows", "not nic.get('ipv6AccessConfigs')",
+	} {
+		if !strings.Contains(provision, expected) {
+			t.Errorf("provision must remove and reject every external VM access configuration: %q", expected)
+		}
+	}
+	removeExternalAt := strings.Index(provision, "gcloud compute instances delete-access-config")
+	convergenceAt := strings.Index(provision, `gcloud compute networks describe "${VPC_NETWORK}"`)
+	if removeExternalAt < 0 || convergenceAt < 0 || removeExternalAt > convergenceAt {
+		t.Error("existing VM public access must be removed before slower infrastructure convergence")
 	}
 	var lifecycle struct {
 		Rule []json.RawMessage `json:"rule"`

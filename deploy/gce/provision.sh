@@ -56,6 +56,26 @@ else
   gcloud services enable --project="${PROJECT_ID}" "${required_services[@]}"
 fi
 
+# Remove any public IPv4 access configuration before performing slower
+# convergence work. This also repairs instances created by older gcloud
+# invocations where a separate --no-address was overridden by
+# --network-interface.
+if gcloud compute instances describe "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" >/dev/null 2>&1; then
+  instance_json="$(gcloud compute instances describe "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" --format=json)"
+  public_access_rows="$(INSTANCE_JSON="${instance_json}" python3 - <<'PY'
+import json, os
+for nic in json.loads(os.environ["INSTANCE_JSON"]).get("networkInterfaces", []):
+    for access in nic.get("accessConfigs", []):
+        print(f"{nic['name']}\t{access['name']}")
+PY
+)"
+  while IFS=$'\t' read -r nic_name access_name; do
+    [[ -n "${nic_name}" && -n "${access_name}" ]] || continue
+    gcloud compute instances delete-access-config "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" \
+      --network-interface="${nic_name}" --access-config-name="${access_name}" --quiet
+  done <<<"${public_access_rows}"
+fi
+
 if ! gcloud compute networks describe "${VPC_NETWORK}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud compute networks create "${VPC_NETWORK}" --project="${PROJECT_ID}" --subnet-mode=custom
 fi
@@ -156,8 +176,8 @@ if ! gcloud compute instances describe "${VM_NAME}" --project="${PROJECT_ID}" --
     --machine-type=e2-medium --image-family=debian-12 --image-project=debian-cloud \
     --boot-disk-type=pd-standard --boot-disk-size=10GB \
     --disk="name=${VM_NAME}-data,device-name=discrawl-data,mode=rw,boot=no,auto-delete=no" \
-    --service-account="${archive_sa}" --scopes=cloud-platform --no-address --deletion-protection \
-    --network-interface="network=${VPC_NETWORK},subnet=${VM_SUBNET},private-network-ip=${ARCHIVE_INTERNAL_IP}" \
+    --service-account="${archive_sa}" --scopes=cloud-platform --deletion-protection \
+    --network-interface="network=${VPC_NETWORK},subnet=${VM_SUBNET},private-network-ip=${ARCHIVE_INTERNAL_IP},no-address" \
     --metadata=block-project-ssh-keys=true,enable-oslogin=TRUE
 fi
 instance_json="$(gcloud compute instances describe "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" --format=json)"
@@ -168,7 +188,7 @@ assert len(d["networkInterfaces"]) == 1
 assert not d.get("tags", {}).get("items")
 nic=d['networkInterfaces'][0]
 assert nic['network'].endswith('/'+network) and nic['subnetwork'].endswith('/'+subnet)
-assert nic['networkIP']==ip and not nic.get('accessConfigs')
+assert nic['networkIP']==ip and not nic.get('accessConfigs') and not nic.get('ipv6AccessConfigs')
 assert d.get('deletionProtection') is True
 assert d['serviceAccounts'][0]['email']==sa
 PY
