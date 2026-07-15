@@ -191,7 +191,8 @@ for _ in $(seq 1 30); do
   sleep 10
 done
 [[ "${ready}" == true ]] || { echo "archive services did not become ready" >&2; exit 1; }
-token="$(gcloud auth print-identity-token --impersonate-service-account="${CLOUD_RUN_CALLER_SERVICE_ACCOUNT}" --audiences="${ARCHIVE_AUDIENCE}")"
+token="$(gcloud auth print-identity-token --impersonate-service-account="${CLOUD_RUN_CALLER_SERVICE_ACCOUNT}" \
+  --audiences="${ARCHIVE_AUDIENCE}" --include-email)"
 status_json="$(printf '%s\n' "${token}" | gcloud compute ssh "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" \
   --tunnel-through-iap --quiet --command='IFS= read -r token; curl --fail --silent --show-error --max-time 10 -H "Authorization: Bearer ${token}" http://127.0.0.1:8787/v1/status')"
 unset token
