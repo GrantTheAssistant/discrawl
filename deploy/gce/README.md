@@ -41,6 +41,13 @@ grant `roles/iam.serviceAccountTokenCreator` on that caller SA and the relevant
 IAP/OS Login roles to the operator. Keep these operator permissions off the
 archive runtime SA.
 
+When every required API is already enabled and the operator intentionally lacks
+`serviceusage.services.enable`, set `DISCRAWL_APIS_PRE_ENABLED=true`.
+Provisioning then performs an exact enabled-service readback and fails before
+creating resources if any required API is missing. This flag does not bypass
+any Compute, IAM, Secret Manager, IAP, OS Login, Storage, or verification
+permission.
+
 The VM service account has project-wide `roles/datastore.user` and
 `roles/firebasedatabase.admin`, plus logging/metrics writer roles and
 `storage.objectCreator` on its tenant backup bucket. Google Cloud IAM cannot

@@ -42,9 +42,19 @@ router="${VM_NAME}-router"
 nat="${VM_NAME}-public-nat"
 snapshot_policy="${VM_NAME}-weekly"
 
-gcloud services enable --project="${PROJECT_ID}" compute.googleapis.com firebasedatabase.googleapis.com \
-  firestore.googleapis.com storage.googleapis.com logging.googleapis.com monitoring.googleapis.com
-gcloud services enable --project="${PROJECT_ID}" secretmanager.googleapis.com
+required_services=(compute.googleapis.com firebasedatabase.googleapis.com firestore.googleapis.com \
+  storage.googleapis.com logging.googleapis.com monitoring.googleapis.com secretmanager.googleapis.com)
+if [[ "${DISCRAWL_APIS_PRE_ENABLED:-false}" == true ]]; then
+  enabled_services="$(gcloud services list --enabled --project="${PROJECT_ID}" --format='value(config.name)')"
+  for service in "${required_services[@]}"; do
+    grep -Fxq "${service}" <<<"${enabled_services}" || {
+      echo "required pre-enabled API is missing: ${service}" >&2
+      exit 1
+    }
+  done
+else
+  gcloud services enable --project="${PROJECT_ID}" "${required_services[@]}"
+fi
 
 if ! gcloud compute networks describe "${VPC_NETWORK}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud compute networks create "${VPC_NETWORK}" --project="${PROJECT_ID}" --subnet-mode=custom

@@ -75,6 +75,13 @@ func TestShellAssetsParseAndProvisionReferencesExist(t *testing.T) {
 		!strings.Contains(provision, `s|%%SERVERLESS_SUBNET_RANGE%%|${SERVERLESS_SUBNET_RANGE}|g`) {
 		t.Error("archive API must bind its fixed pre-auth limiter to the exact Direct VPC subnet")
 	}
+	for _, expected := range []string{
+		"DISCRAWL_APIS_PRE_ENABLED", "gcloud services list --enabled", "required pre-enabled API is missing",
+	} {
+		if !strings.Contains(provision, expected) {
+			t.Errorf("provision pre-enabled API contract missing %q", expected)
+		}
+	}
 }
 
 func TestHostRollbackAndBackupContracts(t *testing.T) {
