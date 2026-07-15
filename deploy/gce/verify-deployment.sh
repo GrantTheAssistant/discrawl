@@ -67,7 +67,7 @@ assert len(weekly) == 1 and weekly[0]["day"] in ("SUN", "SUNDAY") and weekly[0][
 PY
 
 project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
-bucket_json="$(gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --format=json)"
+bucket_json="$(gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --raw --format=json)"
 BUCKET_JSON="${bucket_json}" python3 - "${REGION}" "${project_number}" <<'PY'
 import json, os, sys
 d=json.loads(os.environ["BUCKET_JSON"]); region=sys.argv[1].upper(); project=sys.argv[2]

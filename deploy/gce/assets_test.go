@@ -222,6 +222,9 @@ func TestIsolationAndRetentionContracts(t *testing.T) {
 	if !strings.Contains(provision, `gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --raw --format=json`) {
 		t.Error("backup bucket ownership proof must inspect the raw API schema containing projectNumber")
 	}
+	if !strings.Contains(verify, `gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --raw --format=json`) {
+		t.Error("backup bucket verification must inspect the same raw API schema")
+	}
 	if !strings.Contains(provision, `gcloud storage buckets update "gs://${BACKUP_BUCKET}" --pap --versioning`) ||
 		strings.Contains(provision, "--public-access-prevention=enforced") {
 		t.Error("backup bucket hardening must use the current argument-free gcloud --pap flag")
