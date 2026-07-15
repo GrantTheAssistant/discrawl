@@ -268,6 +268,14 @@ func TestIsolationAndRetentionContracts(t *testing.T) {
 	}
 }
 
+func TestVerifierRequestsCallerEmailClaim(t *testing.T) {
+	verify := readAsset(t, "verify-deployment.sh")
+	if !strings.Contains(verify, `gcloud auth print-identity-token --impersonate-service-account="${CLOUD_RUN_CALLER_SERVICE_ACCOUNT}" \
+  --audiences="${ARCHIVE_AUDIENCE}" --include-email`) {
+		t.Error("authenticated archive probe must include the caller email claim required by the API")
+	}
+}
+
 func TestAggregateFirewallVerificationUnderstandsGCPPortEncodings(t *testing.T) {
 	verify := readAsset(t, "verify-deployment.sh")
 	block := pythonHeredocAfter(t, verify, `TARGET_FIREWALLS="${target_firewalls}" python3`)
