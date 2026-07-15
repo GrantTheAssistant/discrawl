@@ -31,8 +31,8 @@ import ipaddress, sys
 vm, serverless = map(ipaddress.ip_network, sys.argv[1:3])
 ip = ipaddress.ip_address(sys.argv[3])
 private = [ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"), ipaddress.ip_network("192.168.0.0/16")]
-if not any(vm.subnet_of(block) for block in private) or not any(serverless.subnet_of(block) for block in private) or serverless.prefixlen > 26:
-    raise SystemExit("subnets must be RFC1918; Direct VPC subnet must be /26 or larger")
+if not any(vm.subnet_of(block) for block in private) or not any(serverless.subnet_of(block) for block in private) or not 24 <= serverless.prefixlen <= 26:
+    raise SystemExit("subnets must be RFC1918; Direct VPC subnet must be /24, /25, or /26")
 if vm.overlaps(serverless) or ip not in vm or ip in (vm.network_address, vm.broadcast_address):
     raise SystemExit("subnets must not overlap and internal IP must be in VM subnet")
 PY
@@ -104,8 +104,16 @@ gcloud secrets remove-iam-policy-binding "${BOT_SECRET_ID}" --project="${PROJECT
 if ! gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud storage buckets create "gs://${BACKUP_BUCKET}" --project="${PROJECT_ID}" --location="${REGION}" --uniform-bucket-level-access
 fi
-bucket_location="$(gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --format='value(location)')"
-[[ "${bucket_location,,}" == "${REGION,,}" ]] || { echo "backup bucket region drift" >&2; exit 1; }
+project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+bucket_json="$(gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --format=json)"
+BUCKET_JSON="${bucket_json}" python3 - "${REGION}" "${project_number}" <<'PY'
+import json, os, sys
+d=json.loads(os.environ["BUCKET_JSON"]); region=sys.argv[1].upper(); project=sys.argv[2]
+if str(d.get("location", "")).upper() != region:
+    raise SystemExit("backup bucket region drift")
+if str(d.get("projectNumber", d.get("project_number", ""))) != project:
+    raise SystemExit("backup bucket project drift")
+PY
 gcloud storage buckets update "gs://${BACKUP_BUCKET}" --public-access-prevention=enforced --versioning \
   --soft-delete-duration=7d --retention-period=1d --lifecycle-file="${SCRIPT_DIR}/backup-lifecycle.json"
 gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
@@ -198,6 +206,7 @@ sed -e "s|%%DISCORD_GUILD_ID%%|${DISCORD_GUILD_ID}|g" "${SCRIPT_DIR}/config.toml
 sed -e "s|%%DISCORD_GUILD_ID%%|${DISCORD_GUILD_ID}|g" \
   -e "s|%%ARCHIVE_AUDIENCE%%|${ARCHIVE_AUDIENCE}|g" \
   -e "s|%%CLOUD_RUN_CALLER_SERVICE_ACCOUNT%%|${CLOUD_RUN_CALLER_SERVICE_ACCOUNT}|g" \
+  -e "s|%%SERVERLESS_SUBNET_RANGE%%|${SERVERLESS_SUBNET_RANGE}|g" \
   -e "s|%%PROJECT_ID%%|${PROJECT_ID}|g" -e "s|%%ORG_ID%%|${ORG_ID}|g" \
   -e "s|%%DATABASE_URL%%|${DATABASE_URL}|g" "${SCRIPT_DIR}/archive-api.json.template" > "${stage}/archive-api.json"
 token="$(gcloud secrets versions access latest --secret="${BOT_SECRET_ID}" --project="${PROJECT_ID}")"

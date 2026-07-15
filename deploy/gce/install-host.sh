@@ -129,7 +129,10 @@ rollback_upgrade() {
   set +e
   local rollback_failed=false
   if [[ "${rollback_armed}" == true && -n "${prior}" ]]; then
-    systemctl stop discrawl-api.service discrawl-tail.service >/dev/null 2>&1 || rollback_failed=true
+    if ! stop_db_services >/dev/null 2>&1; then
+      echo "CRITICAL: upgrade rollback refused to replace SQLite while a writer may still be active; keep the VM isolated and recover from ${prior}" >&2
+      exit "${rc}"
+    fi
     install -o root -g root -m 0755 "${prior}/discrawl" /usr/local/bin/discrawl || rollback_failed=true
     install -o root -g root -m 0755 "${prior}/discrawl-api" /usr/local/bin/discrawl-api || rollback_failed=true
     if [[ -f "${prior}/config.toml" ]]; then install -o root -g discrawl -m 0640 "${prior}/config.toml" /etc/discrawl/config.toml || rollback_failed=true; fi
@@ -159,6 +162,16 @@ rollback_upgrade() {
   fi
   exit "${rc}"
 }
+stop_db_services() {
+  local service
+  systemctl stop discrawl-sync.service discrawl-api.service discrawl-tail.service || return 1
+  for service in discrawl-sync.service discrawl-api.service discrawl-tail.service; do
+    if systemctl is-active --quiet "${service}"; then
+      echo "SQLite writer service remains active: ${service}" >&2
+      return 1
+    fi
+  done
+}
 rollback_armed=true
 trap rollback_upgrade ERR
 install -o root -g root -m 0755 "${discrawl_binary}" /usr/local/bin/discrawl
@@ -181,7 +194,7 @@ token="$(sed -n 's/^DISCORD_BOT_TOKEN=//p' /etc/discrawl/bot-token.env)"
 [[ "${guild_id}" =~ ^[0-9]{17,20}$ && "${token}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid staged guild or token" >&2; rollback_upgrade 1; }
 
 systemctl daemon-reload
-systemctl stop discrawl-api.service discrawl-tail.service
+stop_db_services
 if [[ ! -s /var/lib/discrawl/archive.db ]]; then
   sync_args=--full
 else

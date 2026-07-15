@@ -4,6 +4,7 @@
   "guild_id": "%%DISCORD_GUILD_ID%%",
   "audience": "%%ARCHIVE_AUDIENCE%%",
   "allowed_caller_service_account": "%%CLOUD_RUN_CALLER_SERVICE_ACCOUNT%%",
+  "allowed_source_cidr": "%%SERVERLESS_SUBNET_RANGE%%",
   "query_timeout": "5s",
   "max_concurrent_queries": 4,
   "requests_per_second": 20,

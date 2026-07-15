@@ -1771,13 +1771,44 @@ func TestOpenMigratesV4ToV5WithoutLosingMessages(t *testing.T) {
 
 	_, err = s.DB().ExecContext(ctx, `update message_tombstones set deleted_at = '2026-07-14T12:00:00.1Z' where message_id = '123'`)
 	require.NoError(t, err)
-	require.NoError(t, s.applyMessageTombstoneMigration(ctx))
-	require.NoError(t, s.applyMessageTombstoneMigration(ctx))
+	require.NoError(t, s.applyMessageTombstoneMigration(ctx, true))
+	require.NoError(t, s.applyMessageTombstoneMigration(ctx, true))
 	var normalized string
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select deleted_at from message_tombstones where message_id = '123'`).Scan(&normalized))
 	// The v4 message timestamp is earlier, so rerunning the migration restores
 	// the chronologically earliest normalized value.
 	require.Equal(t, "2026-07-14T12:00:00.000000000Z", normalized)
+}
+
+func TestOpenAtV5DoesNotRenormalizeDeletionLedger(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl-v5.db")
+
+	s, err := Open(ctx, dbPath)
+	require.NoError(t, err)
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "channel", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+		ID: "123", GuildID: "g1", ChannelID: "c1", CreatedAt: time.Now().UTC().Format(timeLayout),
+		Content: "private", NormalizedContent: "private", RawJSON: `{}`,
+	}))
+	require.NoError(t, s.MarkMessageDeleted(ctx, "g1", "c1", "123", map[string]any{}))
+	_, err = s.DB().ExecContext(ctx, `
+		create table migration_audit(n integer not null);
+		insert into migration_audit values(0);
+		create trigger audit_tombstone_update after update on message_tombstones
+		begin update migration_audit set n=n+1; end;
+	`)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+
+	s, err = Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	var rewrites int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select n from migration_audit`).Scan(&rewrites))
+	require.Zero(t, rewrites, "an already-v5 writable reopen must not rewrite the complete deletion ledger")
 }
 
 func indexNames(t *testing.T, ctx context.Context, db *sql.DB, table string) []string {

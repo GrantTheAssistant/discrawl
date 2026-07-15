@@ -205,7 +205,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		currentVersion = 4
 	}
 	if currentVersion < 5 {
-		if err := s.applyMessageTombstoneMigration(ctx); err != nil {
+		if err := s.applyMessageTombstoneMigration(ctx, true); err != nil {
 			return err
 		}
 		if err := s.setSchemaVersion(ctx, 5); err != nil {
@@ -226,7 +226,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.applyFailureLedgerMigration(ctx); err != nil {
 		return err
 	}
-	if err := s.applyMessageTombstoneMigration(ctx); err != nil {
+	if err := s.applyMessageTombstoneMigration(ctx, false); err != nil {
 		return err
 	}
 	if err := s.ensureFTSRowIDs(ctx); err != nil {
@@ -241,7 +241,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) applyMessageTombstoneMigration(ctx context.Context) error {
+func (s *Store) applyMessageTombstoneMigration(ctx context.Context, normalizeExisting bool) error {
 	if _, err := s.db.ExecContext(ctx, `
 		create table if not exists message_tombstones (
 			message_id text primary key,
@@ -261,8 +261,10 @@ func (s *Store) applyMessageTombstoneMigration(ctx context.Context) error {
 	`); err != nil {
 		return err
 	}
-	if err := s.normalizeMessageTombstones(ctx); err != nil {
-		return err
+	if normalizeExisting {
+		if err := s.normalizeMessageTombstones(ctx); err != nil {
+			return err
+		}
 	}
 	_, err := s.db.ExecContext(ctx, `
 		create trigger if not exists apply_message_tombstone_after_insert

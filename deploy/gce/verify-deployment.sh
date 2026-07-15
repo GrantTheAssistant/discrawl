@@ -37,6 +37,8 @@ for spec in "${VM_SUBNET}:${VM_SUBNET_RANGE}" "${SERVERLESS_SUBNET}:${SERVERLESS
   [[ "$(gcloud compute networks subnets describe "${name}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(ipCidrRange)')" == "${range}" ]]
   [[ "$(gcloud compute networks subnets describe "${name}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(privateIpGoogleAccess)')" == True ]]
 done
+gcloud compute ssh "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" --tunnel-through-iap --quiet \
+  --command="sudo python3 -c 'import json; assert json.load(open(\"/etc/discrawl/archive-api.json\"))[\"allowed_source_cidr\"] == \"${SERVERLESS_SUBNET_RANGE}\"'"
 nat_json="$(gcloud compute routers nats describe "${nat}" --router="${router}" --project="${PROJECT_ID}" --region="${REGION}" --format=json)"
 NAT_JSON="${nat_json}" python3 - "${VM_SUBNET}" <<'PY'
 import json, os, sys
@@ -99,6 +101,18 @@ roles={b["role"] for b in d.get("bindings", []) if member in b.get("members", []
 required={"roles/datastore.user", "roles/firebasedatabase.admin", "roles/logging.logWriter", "roles/monitoring.metricWriter"}
 assert roles == required
 PY
+ancestor_iam="$(gcloud projects get-ancestors-iam-policy "${PROJECT_ID}" --format=json)"
+ANCESTOR_IAM="${ancestor_iam}" python3 - "${member}" <<'PY'
+import json, os, sys
+rows=json.loads(os.environ["ANCESTOR_IAM"]); member=sys.argv[1]
+roles=set()
+for row in rows:
+    for binding in row.get("policy", {}).get("bindings", []):
+        if member in binding.get("members", []):
+            roles.add(binding["role"])
+required={"roles/datastore.user", "roles/firebasedatabase.admin", "roles/logging.logWriter", "roles/monitoring.metricWriter"}
+assert roles == required
+PY
 secret_iam="$(gcloud secrets get-iam-policy "${BOT_SECRET_ID}" --project="${PROJECT_ID}" --format=json)"
 SECRET_IAM="${secret_iam}" python3 - "${member}" <<'PY'
 import json, os, sys
@@ -131,6 +145,22 @@ TARGET_FIREWALLS="${target_firewalls}" python3 - "${VM_NAME}-archive-private" "$
 import json, os, sys
 rules=json.loads(os.environ["TARGET_FIREWALLS"]); expected, source, network, sa=sys.argv[1:]
 port_8787=[]
+def covers_port(spec, port):
+    parts=str(spec).split("-", 1)
+    try:
+        first=int(parts[0]); last=int(parts[-1])
+    except ValueError as exc:
+        raise AssertionError(f"invalid firewall port specification: {spec}") from exc
+    assert 1 <= first <= last <= 65535
+    return first <= port <= last
+def allows_tcp_port(allow, port):
+    protocol=str(allow.get("IPProtocol", "")).lower()
+    if protocol == "all":
+        return True
+    if protocol not in ("tcp", "6"):
+        return False
+    ports=allow.get("ports", [])
+    return not ports or any(covers_port(spec, port) for spec in ports)
 for rule in rules:
     if not rule.get("network", "").endswith("/"+network) or rule.get("disabled") is True or rule.get("direction") != "INGRESS":
         continue
@@ -141,8 +171,7 @@ for rule in rules:
     if target_tags or (target_sas and sa not in target_sas):
         continue
     for allow in rule.get("allowed", []):
-        protocol=allow.get("IPProtocol")
-        if protocol == "all" or (protocol == "tcp" and (not allow.get("ports") or "8787" in allow.get("ports", []))):
+        if allows_tcp_port(allow, 8787):
             port_8787.append(rule)
 assert len(port_8787) == 1 and port_8787[0]["name"] == expected and port_8787[0].get("sourceRanges") == [source]
 PY

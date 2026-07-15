@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -257,7 +258,9 @@ func TestProjectionFingerprintCanonicalizesFirestoreArrayShapes(t *testing.T) {
 	doc := projectionDocument(Binding{ID: "general", GuildID: testGuild, ChannelID: testChannel}, message, nil)
 	roundTripped := cloneMap(doc)
 	roundTripped["attachments"] = []any{map[string]any{"id": "a", "filename": "a.txt", "contentType": "", "size": int64(0)}}
-	require.True(t, mapsEqual(doc, roundTripped))
+	equal, err := mapsEqual(doc, roundTripped)
+	require.NoError(t, err)
+	require.True(t, equal)
 	descriptors := doc["attachments"].([]map[string]any)
 	require.Len(t, descriptors, 1)
 	require.NotContains(t, descriptors[0], "url")
@@ -269,7 +272,24 @@ func TestProjectionFingerprintCanonicalizesFirestoreArrayShapes(t *testing.T) {
 		"url":      "https://cdn.discordapp.com/attachments/c/m/a.txt?ex=secret",
 		"proxyUrl": "https://media.discordapp.net/attachments/c/m/a.txt?hm=secret",
 	}}
-	require.False(t, mapsEqual(doc, legacy), "replay must replace historical projected CDN URLs")
+	equal, err = mapsEqual(doc, legacy)
+	require.NoError(t, err)
+	require.False(t, equal, "replay must replace historical projected CDN URLs")
+}
+
+func TestProjectionFingerprintFailsClosedOnUnsupportedFirestoreValue(t *testing.T) {
+	existing := map[string]any{
+		"authorPhoto": math.NaN(),
+		"content":     "must be deleted",
+		"deleted":     false,
+	}
+	deleted := cloneMap(existing)
+	deleted["content"] = ""
+	deleted["deleted"] = true
+
+	equal, err := mapsEqual(existing, deleted)
+	require.Error(t, err)
+	require.False(t, equal)
 }
 
 func TestSanitizeProjectedAttachmentsRemovesEveryURLVariantAndPreservesMetadata(t *testing.T) {

@@ -50,12 +50,26 @@ administrative blast radius inside that project. The VM has no Secret Manager
 access and cannot read, overwrite, or delete backups.
 The provisioning operator reads the bot secret once and installs a mode-0400
 environment file owned only by `discrawl-tail`.
+Deployment verification reads the project and every ancestor IAM policy and
+fails closed unless direct bindings for the archive service account resolve to
+exactly the four documented project roles. The operator therefore needs IAM
+policy read access on every ancestor. That readback cannot expand Google Group
+or principal-set membership; before production approval, use Cloud Asset IAM
+analysis with group expansion (or an equivalent organization-level review) to
+prove the archive service account is not indirectly included in a broader
+binding.
 
 The custom VPC has two non-overlapping RFC1918 subnets:
 
 - a VM subnet, included in Cloud NAT, for Discord/Google API egress;
-- a dedicated `/26` or larger Direct VPC subnet, excluded from NAT, used by the
+- a dedicated `/24`, `/25`, or `/26` Direct VPC subnet, excluded from NAT, used by the
   tenant Cloud Run runtime to call the VM's fixed private IP.
+
+The API rejects authenticated-route traffic outside that exact subnet before
+OIDC verification and uses one fixed pre-authentication rate bucket per subnet
+address. Forwarding headers are ignored. The fixed `/24` maximum keeps limiter
+state bounded while preventing one sibling workload address from starving the
+authorized Cloud Run caller's address.
 
 Firewall ingress is limited to port 8787 from that exact Direct VPC CIDR and
 port 22 from the IAP TCP-forwarding CIDR, both targeting only the archive VM

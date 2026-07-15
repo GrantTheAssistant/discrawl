@@ -42,12 +42,26 @@ rollback_dir="/var/lib/discrawl/backups/pre-restore-${stamp}"
 mkdir -m 0700 "${rollback_dir}"
 new_db_installed=false
 
+stop_db_services() {
+  local service
+  systemctl stop discrawl-sync.service discrawl-api.service discrawl-tail.service || return 1
+  for service in discrawl-sync.service discrawl-api.service discrawl-tail.service; do
+    if systemctl is-active --quiet "${service}"; then
+      echo "SQLite writer service remains active: ${service}" >&2
+      return 1
+    fi
+  done
+}
+
 restore_old() {
   local rc=$?
   trap - ERR
   set +e
   rm -f /run/discrawl-sync.env
-  systemctl stop discrawl-api.service discrawl-tail.service >/dev/null 2>&1
+  if ! stop_db_services >/dev/null 2>&1; then
+    echo "CRITICAL: restore rollback refused to replace SQLite while a writer may still be active; keep the VM isolated and recover from ${rollback_dir}" >&2
+    exit "${rc}"
+  fi
   for name in archive.db archive.db-wal archive.db-shm; do
     if [[ -e "${rollback_dir}/${name}" ]]; then
       rm -f "/var/lib/discrawl/${name}"
@@ -64,7 +78,7 @@ restore_old() {
 }
 trap restore_old ERR
 
-systemctl stop discrawl-api.service discrawl-tail.service
+stop_db_services
 restore_started="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
 for path in /var/lib/discrawl/archive.db /var/lib/discrawl/archive.db-wal /var/lib/discrawl/archive.db-shm; do
   [[ -e "${path}" ]] && mv -- "${path}" "${rollback_dir}/"

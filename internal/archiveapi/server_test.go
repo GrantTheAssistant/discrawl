@@ -31,6 +31,16 @@ type fixedVerifier struct {
 
 type countingVerifier struct{ calls atomic.Int64 }
 
+type selectiveVerifier struct{ calls atomic.Int64 }
+
+func (v *selectiveVerifier) Verify(_ context.Context, token, _ string) (tokenClaims, error) {
+	v.calls.Add(1)
+	if token == "valid-token" {
+		return validClaims(), nil
+	}
+	return tokenClaims{}, errors.New("invalid token")
+}
+
 func (v *countingVerifier) Verify(context.Context, string, string) (tokenClaims, error) {
 	v.calls.Add(1)
 	return tokenClaims{}, errors.New("invalid token")
@@ -68,7 +78,8 @@ func testConfig(path string) Config {
 	return Config{
 		Listen: "127.0.0.1:0", DBPath: path, GuildID: apiGuild,
 		Audience: apiAudience, AllowedCallerServiceAccount: apiCaller,
-		QueryTimeout: "2s", StaleAfter: "2h", MaxConcurrentQueries: 1,
+		AllowedSourceCIDR: "10.20.0.0/26",
+		QueryTimeout:      "2s", StaleAfter: "2h", MaxConcurrentQueries: 1,
 		RequestsPerSecond: 100, RequestBurst: 100, MaxResponseBytes: 1 << 20,
 		MaxRequestURIBytes: 4096,
 	}
@@ -84,7 +95,15 @@ func newTestServer(t *testing.T, cfg Config, verifier tokenVerifier) *Server {
 
 func apiRequest(method, target string) *http.Request {
 	req := httptest.NewRequest(method, target, nil)
+	req.RemoteAddr = "10.20.0.1:1234"
 	req.Header.Set("Authorization", "Bearer signed-token")
+	return req
+}
+
+func apiRequestFrom(method, target, source, token string) *http.Request {
+	req := httptest.NewRequest(method, target, nil)
+	req.RemoteAddr = source
+	req.Header.Set("Authorization", "Bearer "+token)
 	return req
 }
 
@@ -185,6 +204,48 @@ func TestInvalidTokenFloodIsThrottledBeforeRepeatedVerification(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, first.Code)
 	require.Equal(t, http.StatusTooManyRequests, second.Code)
 	require.Equal(t, int64(1), verifier.calls.Load())
+}
+
+func TestPreAuthRateLimitIsFixedPerDirectVPCSource(t *testing.T) {
+	cfg := testConfig(seedAPIDatabase(t, 0))
+	cfg.RequestsPerSecond, cfg.RequestBurst = 1, 1
+	verifier := &selectiveVerifier{}
+	server := newTestServer(t, cfg, verifier)
+	require.Len(t, server.authRateLimit.buckets, 65, "a /26 plus one loopback slot must allocate fixed bounded state")
+
+	first := apiRequestFrom(http.MethodGet, "/v1/status", "10.20.0.2:1000", "invalid-token")
+	firstResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(firstResponse, first)
+	require.Equal(t, http.StatusUnauthorized, firstResponse.Code)
+
+	spoofed := apiRequestFrom(http.MethodGet, "/v1/status", "10.20.0.2:1001", "invalid-token")
+	spoofed.Header.Set("X-Forwarded-For", "10.20.0.3")
+	spoofedResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(spoofedResponse, spoofed)
+	require.Equal(t, http.StatusTooManyRequests, spoofedResponse.Code)
+	require.Equal(t, int64(1), verifier.calls.Load(), "same-source flood must be rejected before repeated verification")
+
+	validResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(validResponse, apiRequestFrom(http.MethodGet, "/v1/status", "10.20.0.3:1000", "valid-token"))
+	require.Equal(t, http.StatusOK, validResponse.Code)
+	require.Equal(t, int64(2), verifier.calls.Load(), "a different Direct VPC source keeps its reserved verification bucket")
+
+	for _, remoteAddr := range []string{"10.21.0.1:1000", "malformed"} {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, apiRequestFrom(http.MethodGet, "/v1/status", remoteAddr, "valid-token"))
+		require.Equal(t, http.StatusForbidden, response.Code)
+	}
+	require.Equal(t, int64(2), verifier.calls.Load(), "out-of-subnet sources must fail before token verification")
+}
+
+func TestConfigRequiresCanonicalBoundedPrivateSourceCIDR(t *testing.T) {
+	path := seedAPIDatabase(t, 0)
+	for _, cidr := range []string{"", "0.0.0.0/0", "10.20.0.1/26", "10.20.0.0/23", "2001:db8::/64"} {
+		cfg := testConfig(path)
+		cfg.AllowedSourceCIDR = cidr
+		_, err := newServer(cfg, nil, fixedVerifier{claims: validClaims()})
+		require.Error(t, err, cidr)
+	}
 }
 
 func TestAPIFailsClosedWithoutExactChannelScopeAndHasNoChannelCatalog(t *testing.T) {

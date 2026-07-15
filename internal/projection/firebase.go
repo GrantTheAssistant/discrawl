@@ -141,7 +141,11 @@ func (s *FirebaseSink) ApplyMessages(ctx context.Context, bindings []Binding, me
 				}
 			}
 			candidate = preserveTerminalDelete(candidate, existing, ledger)
-			if mapsEqual(existing, candidate) {
+			equal, err := mapsEqual(existing, candidate)
+			if err != nil {
+				return err
+			}
+			if equal {
 				continue
 			}
 			if err := tx.Set(refs[i], candidate, firestore.MergeAll); err != nil {
@@ -219,7 +223,11 @@ func (s *FirebaseSink) ApplyTombstones(ctx context.Context, bindings []Binding, 
 			if validBindingID(bindingID) {
 				attemptBindings[bindingID] = struct{}{}
 			}
-			if mapsEqual(existing, candidate) {
+			equal, err := mapsEqual(existing, candidate)
+			if err != nil {
+				return err
+			}
+			if equal {
 				continue
 			}
 			if err := tx.Set(refs[i], candidate, firestore.MergeAll); err != nil {
@@ -554,7 +562,7 @@ func projectionAttachments(rows []store.ArchiveAttachment) []map[string]any {
 	return out
 }
 
-func projectionFingerprint(doc map[string]any) string {
+func projectionFingerprint(doc map[string]any) (string, error) {
 	keys := []string{
 		"discordMessageId", "discordSortKey", "bindingId", "guildId", "channelId", "threadId",
 		"content", "authorDiscordId", "authorName", "authorPhoto", "roleColor", "isBot", "isWebhook",
@@ -564,11 +572,24 @@ func projectionFingerprint(doc map[string]any) string {
 	for _, key := range keys {
 		values[key] = doc[key]
 	}
-	body, _ := json.Marshal(values)
-	return string(body)
+	body, err := json.Marshal(values)
+	if err != nil {
+		return "", fmt.Errorf("marshal projection fingerprint: %w", err)
+	}
+	return string(body), nil
 }
 
-func mapsEqual(a, b map[string]any) bool { return projectionFingerprint(a) == projectionFingerprint(b) }
+func mapsEqual(a, b map[string]any) (bool, error) {
+	aFingerprint, err := projectionFingerprint(a)
+	if err != nil {
+		return false, err
+	}
+	bFingerprint, err := projectionFingerprint(b)
+	if err != nil {
+		return false, err
+	}
+	return aFingerprint == bFingerprint, nil
+}
 
 func cloneMap(input map[string]any) map[string]any {
 	out := make(map[string]any, len(input))

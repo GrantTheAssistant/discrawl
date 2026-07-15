@@ -3,6 +3,7 @@ package archiveapi
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ type Config struct {
 	GuildID                     string           `json:"guild_id"`
 	Audience                    string           `json:"audience"`
 	AllowedCallerServiceAccount string           `json:"allowed_caller_service_account"`
+	AllowedSourceCIDR           string           `json:"allowed_source_cidr"`
 	QueryTimeout                string           `json:"query_timeout"`
 	MaxConcurrentQueries        int              `json:"max_concurrent_queries"`
 	RequestsPerSecond           int              `json:"requests_per_second"`
@@ -70,6 +72,7 @@ func (c *Config) normalize() error {
 	c.GuildID = strings.TrimSpace(c.GuildID)
 	c.Audience = strings.TrimSpace(c.Audience)
 	c.AllowedCallerServiceAccount = strings.ToLower(strings.TrimSpace(c.AllowedCallerServiceAccount))
+	c.AllowedSourceCIDR = strings.TrimSpace(c.AllowedSourceCIDR)
 	if c.Listen == "" {
 		c.Listen = "0.0.0.0:8787"
 	}
@@ -94,8 +97,8 @@ func (c *Config) normalize() error {
 	if c.MaxRequestURIBytes == 0 {
 		c.MaxRequestURIBytes = 4096
 	}
-	if c.DBPath == "" || c.GuildID == "" || c.Audience == "" || c.AllowedCallerServiceAccount == "" {
-		return fmt.Errorf("db_path, guild_id, audience, and allowed_caller_service_account are required")
+	if c.DBPath == "" || c.GuildID == "" || c.Audience == "" || c.AllowedCallerServiceAccount == "" || c.AllowedSourceCIDR == "" {
+		return fmt.Errorf("db_path, guild_id, audience, allowed_caller_service_account, and allowed_source_cidr are required")
 	}
 	if !isDiscordSnowflake(c.GuildID) {
 		return fmt.Errorf("guild_id must be a Discord snowflake")
@@ -105,6 +108,9 @@ func (c *Config) normalize() error {
 	}
 	if parsed, err := url.Parse(c.Audience); err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
 		return fmt.Errorf("audience must be an exact HTTPS URL")
+	}
+	if _, err := parseAllowedSourceCIDR(c.AllowedSourceCIDR); err != nil {
+		return err
 	}
 	if _, err := time.ParseDuration(c.QueryTimeout); err != nil {
 		return fmt.Errorf("invalid query_timeout: %w", err)
@@ -125,6 +131,18 @@ func (c *Config) normalize() error {
 		return fmt.Errorf("max_request_uri_bytes must be between 512 and 16384")
 	}
 	return c.Projection.normalize(c.GuildID)
+}
+
+func parseAllowedSourceCIDR(raw string) (*net.IPNet, error) {
+	ip, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+	if err != nil || ip.To4() == nil || network.IP.To4() == nil {
+		return nil, fmt.Errorf("allowed_source_cidr must be a canonical private IPv4 /24, /25, or /26")
+	}
+	ones, bits := network.Mask.Size()
+	if bits != 32 || ones < 24 || ones > 26 || ip.String() != network.IP.String() || !network.IP.IsPrivate() {
+		return nil, fmt.Errorf("allowed_source_cidr must be a canonical private IPv4 /24, /25, or /26")
+	}
+	return network, nil
 }
 
 func (p *ProjectionConfig) normalize(_ string) error {

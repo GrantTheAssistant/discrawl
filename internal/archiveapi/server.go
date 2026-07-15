@@ -68,6 +68,49 @@ type tokenBucket struct {
 	capacity float64
 }
 
+type sourceTokenBuckets struct {
+	network  *net.IPNet
+	baseLast byte
+	buckets  []tokenBucket
+}
+
+func newSourceTokenBuckets(cidr string, rate, capacity float64) (sourceTokenBuckets, error) {
+	network, err := parseAllowedSourceCIDR(cidr)
+	if err != nil {
+		return sourceTokenBuckets{}, err
+	}
+	ones, _ := network.Mask.Size()
+	count := 1 << (32 - ones)
+	buckets := make([]tokenBucket, count+1) // final fixed slot is trusted host loopback
+	for i := range buckets {
+		buckets[i] = tokenBucket{rate: rate, capacity: capacity}
+	}
+	return sourceTokenBuckets{network: network, baseLast: network.IP.To4()[3], buckets: buckets}, nil
+}
+
+func (b *sourceTokenBuckets) admit(remoteAddr string, now time.Time) (bool, bool) {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return false, false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false, false
+	}
+	if ip.IsLoopback() {
+		return b.buckets[len(b.buckets)-1].allow(now), true
+	}
+	ipv4 := ip.To4()
+	if ipv4 == nil || !b.network.Contains(ipv4) {
+		return false, false
+	}
+	index := int(ipv4[3] - b.baseLast)
+	if index < 0 || index >= len(b.buckets)-1 {
+		return false, false
+	}
+	return b.buckets[index].allow(now), true
+}
+
 func (b *tokenBucket) allow(now time.Time) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -97,7 +140,7 @@ type Server struct {
 	authSemaphore   chan struct{}
 	healthSemaphore chan struct{}
 	rateLimit       tokenBucket
-	authRateLimit   tokenBucket
+	authRateLimit   sourceTokenBuckets
 	healthRateLimit tokenBucket
 	metrics         metrics
 	now             func() time.Time
@@ -122,6 +165,11 @@ func newServer(cfg Config, logger *slog.Logger, verifier tokenVerifier) (*Server
 		_ = archiveStore.Close()
 		return nil, fmt.Errorf("validate isolated archive: %w", err)
 	}
+	authRateLimit, err := newSourceTokenBuckets(cfg.AllowedSourceCIDR, float64(cfg.RequestsPerSecond), float64(cfg.RequestBurst))
+	if err != nil {
+		_ = archiveStore.Close()
+		return nil, err
+	}
 	return &Server{
 		cfg: cfg, logger: logger, store: archiveStore, verifier: verifier,
 		queryTimeout: cfg.queryDuration(), staleAfter: cfg.staleDuration(),
@@ -129,7 +177,7 @@ func newServer(cfg Config, logger *slog.Logger, verifier tokenVerifier) (*Server
 		authSemaphore: make(chan struct{}, cfg.MaxConcurrentQueries), now: time.Now,
 		healthSemaphore: make(chan struct{}, 1),
 		rateLimit:       tokenBucket{rate: float64(cfg.RequestsPerSecond), capacity: float64(cfg.RequestBurst)},
-		authRateLimit:   tokenBucket{rate: float64(cfg.RequestsPerSecond), capacity: float64(cfg.RequestBurst)},
+		authRateLimit:   authRateLimit,
 		healthRateLimit: tokenBucket{rate: 5, capacity: 10},
 	}, nil
 }
@@ -184,7 +232,12 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleMetrics(w, r)
 		return
 	}
-	if !s.authRateLimit.allow(s.now()) {
+	authAllowed, sourceAllowed := s.authRateLimit.admit(r.RemoteAddr, s.now())
+	if !sourceAllowed {
+		s.writeError(w, http.StatusForbidden, "forbidden_source")
+		return
+	}
+	if !authAllowed {
 		s.metrics.rateLimited.Add(1)
 		w.Header().Set("Retry-After", "1")
 		s.writeError(w, http.StatusTooManyRequests, "rate_limited")
