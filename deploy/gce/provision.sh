@@ -209,19 +209,13 @@ ensure_firewall() {
       --direction=INGRESS --action=ALLOW --rules="${rules}" --source-ranges="${sources}" \
       --target-service-accounts="${archive_sa}"
   fi
-  [[ "$(gcloud compute firewall-rules describe "${name}" --project="${PROJECT_ID}" --format='value(network.basename())')" == "${VPC_NETWORK}" ]] || {
-    echo "firewall network drift: ${name}" >&2; exit 1;
-  }
-  [[ "$(gcloud compute firewall-rules describe "${name}" --project="${PROJECT_ID}" --format='value(sourceRanges.list():sort)')" == "${sources}" ]] || {
-    echo "firewall source drift: ${name}" >&2; exit 1;
-  }
-  [[ "$(gcloud compute firewall-rules describe "${name}" --project="${PROJECT_ID}" --format='value(targetServiceAccounts.list():sort)')" == "${archive_sa}" ]] || {
-    echo "firewall target drift: ${name}" >&2; exit 1;
-  }
   firewall_json="$(gcloud compute firewall-rules describe "${name}" --project="${PROJECT_ID}" --format=json)"
-  FIREWALL_JSON="${firewall_json}" python3 - "${rules#tcp:}" <<'PY'
+  FIREWALL_JSON="${firewall_json}" python3 - "${VPC_NETWORK}" "${sources}" "${archive_sa}" "${rules#tcp:}" <<'PY'
 import json, os, sys
-d=json.loads(os.environ["FIREWALL_JSON"]); port=sys.argv[1]
+d=json.loads(os.environ["FIREWALL_JSON"]); network, source, sa, port=sys.argv[1:]
+assert d.get("network", "").endswith("/"+network)
+assert d.get("sourceRanges") == [source]
+assert d.get("targetServiceAccounts") == [sa]
 assert d.get("disabled") is not True and d.get("direction") == "INGRESS"
 assert d.get("allowed") == [{"IPProtocol":"tcp", "ports":[port]}]
 PY

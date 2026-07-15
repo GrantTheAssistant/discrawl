@@ -230,6 +230,19 @@ func TestIsolationAndRetentionContracts(t *testing.T) {
 	if removeExternalAt < 0 || convergenceAt < 0 || removeExternalAt > convergenceAt {
 		t.Error("existing VM public access must be removed before slower infrastructure convergence")
 	}
+	for _, fragileFormat := range []string{"sourceRanges.list():sort", "targetServiceAccounts.list():sort"} {
+		if strings.Contains(provision, fragileFormat) {
+			t.Errorf("firewall verification must use JSON rather than gcloud format expression %q", fragileFormat)
+		}
+	}
+	for _, expected := range []string{
+		`d.get("sourceRanges") == [source]`, `d.get("targetServiceAccounts") == [sa]`,
+		`d.get("network", "").endswith("/"+network)`,
+	} {
+		if !strings.Contains(provision, expected) {
+			t.Errorf("firewall JSON proof missing exact-boundary assertion %q", expected)
+		}
+	}
 	var lifecycle struct {
 		Rule []json.RawMessage `json:"rule"`
 	}
