@@ -366,8 +366,26 @@ func tombstoneDocument(existing map[string]any, row store.ProjectionTombstone) (
 }
 
 func (s *FirebaseSink) Status(ctx context.Context, status Status) error {
-	_, err := s.fs.Collection("orgs").Doc(s.orgID).Collection("chatRuntime").Doc("discrawlProjection").Set(ctx, status, firestore.MergeAll)
+	_, err := s.fs.Collection("orgs").Doc(s.orgID).Collection("chatRuntime").Doc("discrawlProjection").Set(ctx, statusDocument(status), firestore.MergeAll)
 	return err
+}
+
+func statusDocument(status Status) map[string]any {
+	doc := map[string]any{
+		"state":                      status.State,
+		"guildId":                    status.GuildID,
+		"tombstoneSweepComplete":     status.TombstoneSweepComplete,
+		"attachmentUrlSweepComplete": status.AttachmentURLSweepComplete,
+		"lastFailureAt":              status.LastFailureAt,
+		"failureCode":                status.FailureCode,
+		"bindingCount":               status.BindingCount,
+		"projectedChanges":           status.ProjectedChanges,
+		"schemaVersion":              status.SchemaVersion,
+	}
+	if !status.LastSuccessAt.IsZero() {
+		doc["lastSuccessAt"] = status.LastSuccessAt
+	}
+	return doc
 }
 
 func (s *FirebaseSink) messageRef(id string) *firestore.DocumentRef {
