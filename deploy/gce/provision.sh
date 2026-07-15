@@ -5,7 +5,7 @@ umask 077
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 required=(PROJECT_ID REGION ZONE VM_NAME ARCHIVE_SERVICE_ACCOUNT BACKUP_BUCKET BOT_SECRET_ID \
   VPC_NETWORK VM_SUBNET VM_SUBNET_RANGE SERVERLESS_SUBNET SERVERLESS_SUBNET_RANGE ARCHIVE_INTERNAL_IP \
-  CLOUD_RUN_CALLER_SERVICE_ACCOUNT DISCORD_GUILD_ID ORG_ID DATABASE_URL ARCHIVE_AUDIENCE \
+  CLOUD_RUN_CALLER_SERVICE_ACCOUNT DISCORD_GUILD_ID ORG_ID ARCHIVE_AUDIENCE \
   DISCRAWL_TARBALL DISCRAWL_TARBALL_SHA256)
 for name in "${required[@]}"; do
   [[ -n "${!name:-}" ]] || { echo "missing ${name}" >&2; exit 1; }
@@ -24,7 +24,6 @@ printf '%s  %s\n' "${DISCRAWL_TARBALL_SHA256}" "${DISCRAWL_TARBALL}" | sha256sum
   echo "invalid service-account name or guild snowflake" >&2; exit 1;
 }
 [[ "${ARCHIVE_AUDIENCE}" =~ ^https://[A-Za-z0-9._:/-]+$ ]] || { echo "archive audience must be an exact query-free HTTPS URL" >&2; exit 1; }
-[[ "${DATABASE_URL}" == "https://${PROJECT_ID}-default-rtdb.firebaseio.com" ]] || { echo "database URL must be tenant default RTDB origin" >&2; exit 1; }
 
 python3 - "${VM_SUBNET_RANGE}" "${SERVERLESS_SUBNET_RANGE}" "${ARCHIVE_INTERNAL_IP}" <<'PY'
 import ipaddress, sys
@@ -134,12 +133,14 @@ fi
 if ! gcloud iam service-accounts describe "${archive_sa}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud iam service-accounts create "${ARCHIVE_SERVICE_ACCOUNT}" --project="${PROJECT_ID}" --display-name="Tenant Discrawl archive"
 fi
-for role in roles/datastore.user roles/firebasedatabase.admin roles/logging.logWriter roles/monitoring.metricWriter; do
+for role in roles/datastore.user roles/logging.logWriter roles/monitoring.metricWriter; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${archive_sa}" --role="${role}" \
     --condition=None --quiet >/dev/null
 done
 # Converge away from privileges granted by pre-hardening drafts. Secret access
 # remains with the provisioning operator; backups are append-only from the VM.
+gcloud projects remove-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${archive_sa}" \
+  --role=roles/firebasedatabase.admin --condition=None --quiet >/dev/null 2>&1 || true
 gcloud projects remove-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${archive_sa}" \
   --role=roles/secretmanager.secretAccessor --condition=None --quiet >/dev/null 2>&1 || true
 gcloud secrets remove-iam-policy-binding "${BOT_SECRET_ID}" --project="${PROJECT_ID}" \
@@ -176,7 +177,7 @@ fi
 }
 if ! gcloud compute resource-policies describe "${snapshot_policy}" --project="${PROJECT_ID}" --region="${REGION}" >/dev/null 2>&1; then
   gcloud compute resource-policies create snapshot-schedule "${snapshot_policy}" --project="${PROJECT_ID}" --region="${REGION}" \
-    --weekly-schedule=sunday --start-time=05:30 --max-retention-days=14 --on-source-disk-delete=keep-auto-snapshots
+    --weekly-schedule=sunday --start-time=05:00 --max-retention-days=14 --on-source-disk-delete=keep-auto-snapshots
 fi
 attached_policies="$(gcloud compute disks describe "${VM_NAME}-data" --project="${PROJECT_ID}" --zone="${ZONE}" --format='value(resourcePolicies.list())')"
 if [[ ",${attached_policies}," != *",${snapshot_policy},"* ]]; then
@@ -249,7 +250,7 @@ sed -e "s|%%DISCORD_GUILD_ID%%|${DISCORD_GUILD_ID}|g" \
   -e "s|%%CLOUD_RUN_CALLER_SERVICE_ACCOUNT%%|${CLOUD_RUN_CALLER_SERVICE_ACCOUNT}|g" \
   -e "s|%%SERVERLESS_SUBNET_RANGE%%|${SERVERLESS_SUBNET_RANGE}|g" \
   -e "s|%%PROJECT_ID%%|${PROJECT_ID}|g" -e "s|%%ORG_ID%%|${ORG_ID}|g" \
-  -e "s|%%DATABASE_URL%%|${DATABASE_URL}|g" "${SCRIPT_DIR}/archive-api.json.template" > "${stage}/archive-api.json"
+  "${SCRIPT_DIR}/archive-api.json.template" > "${stage}/archive-api.json"
 token="$(gcloud secrets versions access latest --secret="${BOT_SECRET_ID}" --project="${PROJECT_ID}")"
 [[ "${token}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bot secret has unsafe format" >&2; exit 1; }
 printf 'DISCORD_BOT_TOKEN=%s\n' "${token}" > "${stage}/bot-token.env"

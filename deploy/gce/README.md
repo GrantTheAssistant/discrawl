@@ -48,18 +48,18 @@ creating resources if any required API is missing. This flag does not bypass
 any Compute, IAM, Secret Manager, IAP, OS Login, Storage, or verification
 permission.
 
-The VM service account has project-wide `roles/datastore.user` and
-`roles/firebasedatabase.admin`, plus logging/metrics writer roles and
-`storage.objectCreator` on its tenant backup bucket. Google Cloud IAM cannot
-scope those Firebase roles to a collection or RTDB path; the separate tenant
-project is therefore the security boundary, and the RTDB role has full RTDB
-administrative blast radius inside that project. The VM has no Secret Manager
-access and cannot read, overwrite, or delete backups.
+The VM service account has project-wide `roles/datastore.user`, plus
+logging/metrics writer roles and `storage.objectCreator` on its tenant backup
+bucket. Google Cloud IAM cannot scope the Firestore role to a collection, so
+the separate tenant project remains the security boundary. Content-free chat
+invalidation ticks live in a dedicated Firestore subcollection; the VM has no
+Realtime Database or Secret Manager access and cannot read, overwrite, or
+delete backups.
 The provisioning operator reads the bot secret once and installs a mode-0400
 environment file owned only by `discrawl-tail`.
 Deployment verification reads the project and every ancestor IAM policy and
 fails closed unless direct bindings for the archive service account resolve to
-exactly the four documented project roles. The operator therefore needs IAM
+exactly the three documented project roles. The operator therefore needs IAM
 policy read access on every ancestor. That readback cannot expand Google Group
 or principal-set membership; before production approval, use Cloud Asset IAM
 analysis with group expansion (or an equivalent organization-level review) to
@@ -93,7 +93,7 @@ UUID. Three unprivileged users share a read group but not ownership:
 
 Those Unix users separate filesystem ownership only. GCE attaches IAM to the
 VM, not to a Unix UID: the API/projector and backup intentionally retain VM
-service-account metadata access for Firestore/RTDB and GCS. The Discord-facing
+service-account metadata access for Firestore and GCS. The Discord-facing
 tail and offline sync units instead deny metadata IPv4 and IPv6, hide other
 processes with `ProtectProc=invisible`, and fail closed unless Discord DNS works
 through the local systemd-resolved stub while a metadata token probe fails.
@@ -209,7 +209,8 @@ At July 2026 list prices, the fixed two-tenant baseline is approximately
 `e2-micro` VMs, two 10 GB standard boot disks, two 30 GB standard data disks,
 two Public Cloud NAT gateway-hours, and their two public IPv4 addresses. It
 excludes transient `e2-medium` upgrade/restore time, NAT processing, Internet/cross-zone egress, Firestore projection
-reads/writes (including one durable ledger write per delete), RTDB ticks, logs,
+reads/writes (including one durable ledger write per delete and content-free
+invalidation ticks), logs,
 snapshots, and backup bytes. Backup budgeting uses 42 live copies plus roughly
 eight copy-equivalents for noncurrent/lifecycle lag and seven-day soft delete:
 about **50× raw DB**, or **$1.00 per live DB GB per tenant-month** before

@@ -63,7 +63,7 @@ d=json.loads(os.environ["POLICY_JSON"])["snapshotSchedulePolicy"]
 assert int(d["retentionPolicy"]["maxRetentionDays"]) == 14
 assert d["retentionPolicy"]["onSourceDiskDelete"] == "KEEP_AUTO_SNAPSHOTS"
 weekly=d["schedule"]["weeklySchedule"]["dayOfWeeks"]
-assert len(weekly) == 1 and weekly[0]["day"] in ("SUN", "SUNDAY") and weekly[0]["startTime"] == "05:30"
+assert len(weekly) == 1 and weekly[0]["day"] in ("SUN", "SUNDAY") and weekly[0]["startTime"] == "05:00"
 PY
 
 project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
@@ -98,7 +98,7 @@ PROJECT_IAM="${project_iam}" python3 - "${member}" <<'PY'
 import json, os, sys
 d=json.loads(os.environ["PROJECT_IAM"]); member=sys.argv[1]
 roles={b["role"] for b in d.get("bindings", []) if member in b.get("members", [])}
-required={"roles/datastore.user", "roles/firebasedatabase.admin", "roles/logging.logWriter", "roles/monitoring.metricWriter"}
+required={"roles/datastore.user", "roles/logging.logWriter", "roles/monitoring.metricWriter"}
 assert roles == required
 PY
 ancestor_iam="$(gcloud projects get-ancestors-iam-policy "${PROJECT_ID}" --format=json)"
@@ -110,7 +110,7 @@ for row in rows:
     for binding in row.get("policy", {}).get("bindings", []):
         if member in binding.get("members", []):
             roles.add(binding["role"])
-required={"roles/datastore.user", "roles/firebasedatabase.admin", "roles/logging.logWriter", "roles/monitoring.metricWriter"}
+required={"roles/datastore.user", "roles/logging.logWriter", "roles/monitoring.metricWriter"}
 assert roles == required
 PY
 secret_iam="$(gcloud secrets get-iam-policy "${BOT_SECRET_ID}" --project="${PROJECT_ID}" --format=json)"

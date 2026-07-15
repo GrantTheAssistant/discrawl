@@ -43,7 +43,7 @@ func main() {
 		}
 		defer func() { _ = archive.Close() }()
 		firebaseSink, sinkErr := projection.NewFirebaseSink(runCtx, projection.FirebaseConfig{
-			ProjectID: cfg.Projection.ProjectID, OrgID: cfg.Projection.OrgID, DatabaseURL: cfg.Projection.DatabaseURL,
+			ProjectID: cfg.Projection.ProjectID, OrgID: cfg.Projection.OrgID,
 		})
 		if sinkErr != nil {
 			logger.Error("initialize tenant-local projection sink", "error", sinkErr)

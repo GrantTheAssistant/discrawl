@@ -36,7 +36,6 @@ type ProjectionConfig struct {
 	Enabled               bool   `json:"enabled"`
 	ProjectID             string `json:"project_id"`
 	OrgID                 string `json:"org_id"`
-	DatabaseURL           string `json:"database_url"`
 	PollEvery             string `json:"poll_every"`
 	BindingsEvery         string `json:"bindings_every"`
 	RepairEvery           string `json:"repair_every"`
@@ -151,7 +150,6 @@ func (p *ProjectionConfig) normalize(_ string) error {
 	}
 	p.ProjectID = strings.TrimSpace(p.ProjectID)
 	p.OrgID = strings.TrimSpace(p.OrgID)
-	p.DatabaseURL = strings.TrimSpace(p.DatabaseURL)
 	p.StatePath = strings.TrimSpace(p.StatePath)
 	if p.PollEvery == "" {
 		p.PollEvery = "2s"
@@ -183,19 +181,11 @@ func (p *ProjectionConfig) normalize(_ string) error {
 	if p.StatePath == "" {
 		return fmt.Errorf("projection state_path is required and must live on persistent disk")
 	}
-	if p.ProjectID == "" || p.OrgID == "" || p.DatabaseURL == "" {
-		return fmt.Errorf("projection project_id, org_id, and database_url are required when projection is enabled")
+	if p.ProjectID == "" || p.OrgID == "" {
+		return fmt.Errorf("projection project_id and org_id are required when projection is enabled")
 	}
 	if strings.ContainsAny(p.ProjectID+p.OrgID, "/\\") {
 		return fmt.Errorf("projection project_id and org_id may not contain slashes")
-	}
-	parsed, err := url.Parse(p.DatabaseURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" {
-		return fmt.Errorf("projection database_url must be an origin-only HTTPS URL")
-	}
-	expectedDatabaseURL := "https://" + p.ProjectID + "-default-rtdb.firebaseio.com"
-	if p.DatabaseURL != expectedDatabaseURL {
-		return fmt.Errorf("projection database_url must exactly equal %s", expectedDatabaseURL)
 	}
 	for name, item := range map[string]struct {
 		raw     string

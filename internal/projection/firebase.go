@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
-	firebase "firebase.google.com/go/v4"
-	"firebase.google.com/go/v4/db"
 	"github.com/openclaw/discrawl/internal/store"
 	"google.golang.org/api/iterator"
 )
@@ -20,38 +18,25 @@ import (
 const maxBindings = 250
 
 type FirebaseConfig struct {
-	ProjectID   string
-	OrgID       string
-	DatabaseURL string
+	ProjectID string
+	OrgID     string
 }
 
 type FirebaseSink struct {
 	projectID string
 	orgID     string
 	fs        *firestore.Client
-	rtdb      *db.Client
 }
 
 func NewFirebaseSink(ctx context.Context, cfg FirebaseConfig) (*FirebaseSink, error) {
-	if strings.TrimSpace(cfg.ProjectID) == "" || strings.TrimSpace(cfg.OrgID) == "" ||
-		cfg.DatabaseURL != "https://"+cfg.ProjectID+"-default-rtdb.firebaseio.com" {
+	if strings.TrimSpace(cfg.ProjectID) == "" || strings.TrimSpace(cfg.OrgID) == "" {
 		return nil, errors.New("invalid tenant-local Firebase projection configuration")
 	}
 	fs, err := firestore.NewClient(ctx, cfg.ProjectID)
 	if err != nil {
 		return nil, err
 	}
-	app, err := firebase.NewApp(ctx, &firebase.Config{ProjectID: cfg.ProjectID, DatabaseURL: cfg.DatabaseURL})
-	if err != nil {
-		_ = fs.Close()
-		return nil, err
-	}
-	realtime, err := app.Database(ctx)
-	if err != nil {
-		_ = fs.Close()
-		return nil, err
-	}
-	return &FirebaseSink{projectID: cfg.ProjectID, orgID: cfg.OrgID, fs: fs, rtdb: realtime}, nil
+	return &FirebaseSink{projectID: cfg.ProjectID, orgID: cfg.OrgID, fs: fs}, nil
 }
 
 func (s *FirebaseSink) Close() error { return s.fs.Close() }
@@ -160,8 +145,8 @@ func (s *FirebaseSink) ApplyMessages(ctx context.Context, bindings []Binding, me
 		return 0, err
 	}
 	// Re-tick selected bindings even on an unchanged replay. This makes a
-	// Firestore-commit/RTDB-failure safe: the cursor is not advanced and the
-	// replay repairs the missed invalidation without rewriting Firestore.
+	// message-commit/tick-commit failure safe: the cursor is not advanced and
+	// the replay repairs the missed invalidation without rewriting the message.
 	if err := s.writeTicks(ctx, selectedBindings); err != nil {
 		return changed, err
 	}
@@ -399,14 +384,16 @@ func (s *FirebaseSink) writeTicks(ctx context.Context, bindingIDs map[string]str
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	for _, id := range ids {
-		if err := s.rtdb.NewRef(fmt.Sprintf("chatTicks/%s/%s", s.orgID, id)).Set(ctx, map[string]any{
-			"updatedAt": time.Now().UnixMilli(),
-		}); err != nil {
-			return err
-		}
+	if len(ids) == 0 {
+		return nil
 	}
-	return nil
+	batch := s.fs.Batch()
+	for _, id := range ids {
+		ref := s.fs.Collection("orgs").Doc(s.orgID).Collection("chatTicks").Doc(id)
+		batch.Set(ref, map[string]any{"updatedAt": time.Now().UTC()}, firestore.MergeAll)
+	}
+	_, err := batch.Commit(ctx)
+	return err
 }
 
 func bindingTargets(bindings []Binding) map[string]Binding {

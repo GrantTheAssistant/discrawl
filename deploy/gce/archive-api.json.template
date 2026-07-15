@@ -17,7 +17,6 @@
     "enabled": true,
     "project_id": "%%PROJECT_ID%%",
     "org_id": "%%ORG_ID%%",
-    "database_url": "%%DATABASE_URL%%",
     "poll_every": "2s",
     "bindings_every": "5m",
     "repair_every": "6h",

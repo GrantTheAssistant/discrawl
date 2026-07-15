@@ -344,7 +344,7 @@ func TestAncestorIAMVerificationRejectsInheritedArchiveRoles(t *testing.T) {
 	block := pythonHeredocAfter(t, verify, `ANCESTOR_IAM="${ancestor_iam}" python3`)
 	const member = "serviceAccount:discrawl@example.iam.gserviceaccount.com"
 	required := []string{
-		"roles/datastore.user", "roles/firebasedatabase.admin",
+		"roles/datastore.user",
 		"roles/logging.logWriter", "roles/monitoring.metricWriter",
 	}
 	bindings := make([]any, 0, len(required))
