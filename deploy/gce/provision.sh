@@ -102,14 +102,16 @@ if ! gcloud iam service-accounts describe "${archive_sa}" --project="${PROJECT_I
   gcloud iam service-accounts create "${ARCHIVE_SERVICE_ACCOUNT}" --project="${PROJECT_ID}" --display-name="Tenant Discrawl archive"
 fi
 for role in roles/datastore.user roles/firebasedatabase.admin roles/logging.logWriter roles/monitoring.metricWriter; do
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${archive_sa}" --role="${role}" --quiet >/dev/null
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${archive_sa}" --role="${role}" \
+    --condition=None --quiet >/dev/null
 done
 # Converge away from privileges granted by pre-hardening drafts. Secret access
 # remains with the provisioning operator; backups are append-only from the VM.
 gcloud projects remove-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${archive_sa}" \
-  --role=roles/secretmanager.secretAccessor --quiet >/dev/null 2>&1 || true
+  --role=roles/secretmanager.secretAccessor --condition=None --quiet >/dev/null 2>&1 || true
 gcloud secrets remove-iam-policy-binding "${BOT_SECRET_ID}" --project="${PROJECT_ID}" \
-  --member="serviceAccount:${archive_sa}" --role=roles/secretmanager.secretAccessor --quiet >/dev/null 2>&1 || true
+  --member="serviceAccount:${archive_sa}" --role=roles/secretmanager.secretAccessor \
+  --condition=None --quiet >/dev/null 2>&1 || true
 
 if ! gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud storage buckets create "gs://${BACKUP_BUCKET}" --project="${PROJECT_ID}" --location="${REGION}" --uniform-bucket-level-access
@@ -127,9 +129,11 @@ PY
 gcloud storage buckets update "gs://${BACKUP_BUCKET}" --public-access-prevention=enforced --versioning \
   --soft-delete-duration=7d --retention-period=1d --lifecycle-file="${SCRIPT_DIR}/backup-lifecycle.json"
 gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
-  --member="serviceAccount:${archive_sa}" --role=roles/storage.objectCreator --quiet >/dev/null
+  --member="serviceAccount:${archive_sa}" --role=roles/storage.objectCreator \
+  --condition=None --quiet >/dev/null
 gcloud storage buckets remove-iam-policy-binding "gs://${BACKUP_BUCKET}" \
-  --member="serviceAccount:${archive_sa}" --role=roles/storage.objectAdmin --quiet >/dev/null 2>&1 || true
+  --member="serviceAccount:${archive_sa}" --role=roles/storage.objectAdmin \
+  --condition=None --quiet >/dev/null 2>&1 || true
 
 if ! gcloud compute disks describe "${VM_NAME}-data" --project="${PROJECT_ID}" --zone="${ZONE}" >/dev/null 2>&1; then
   gcloud compute disks create "${VM_NAME}-data" --project="${PROJECT_ID}" --zone="${ZONE}" --type=pd-standard --size=30GB

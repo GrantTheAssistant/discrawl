@@ -169,6 +169,25 @@ func TestIsolationAndRetentionContracts(t *testing.T) {
 		}
 	}
 	for _, expected := range []string{
+		`gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${archive_sa}" --role="${role}" \
+    --condition=None`,
+		`gcloud projects remove-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${archive_sa}" \
+  --role=roles/secretmanager.secretAccessor --condition=None`,
+		`gcloud secrets remove-iam-policy-binding "${BOT_SECRET_ID}" --project="${PROJECT_ID}" \
+  --member="serviceAccount:${archive_sa}" --role=roles/secretmanager.secretAccessor \
+  --condition=None`,
+		`gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
+  --member="serviceAccount:${archive_sa}" --role=roles/storage.objectCreator \
+  --condition=None`,
+		`gcloud storage buckets remove-iam-policy-binding "gs://${BACKUP_BUCKET}" \
+  --member="serviceAccount:${archive_sa}" --role=roles/storage.objectAdmin \
+  --condition=None`,
+	} {
+		if !strings.Contains(provision, expected) {
+			t.Errorf("provision IAM mutation must target the unconditional binding explicitly: %q", expected)
+		}
+	}
+	for _, expected := range []string{
 		"assert roles == required", "assert roles == set()", "BOT_SECRET_ID", "not nic.get(\"accessConfigs\")",
 		"len(d[\"networkInterfaces\"]) == 1", "not d.get(\"tags\", {}).get(\"items\")", "endswith(\"/disks/\"+disk)",
 		"target_sas and sa not in target_sas", "port_8787", "get-ancestors-iam-policy", "ANCESTOR_IAM",
