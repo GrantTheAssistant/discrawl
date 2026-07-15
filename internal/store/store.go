@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -128,6 +129,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := store.migrate(ctx); err != nil {
 		_ = base.Close()
 		return nil, err
+	}
+	if os.Getenv("DISCRAWL_DB_GROUP_READABLE") == "1" {
+		if err := os.Chmod(path, 0o640); err != nil {
+			_ = base.Close()
+			return nil, fmt.Errorf("make archive group-readable: %w", err)
+		}
 	}
 	return store, nil
 }

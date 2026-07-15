@@ -87,6 +87,17 @@ func TestShellAssetsParseAndProvisionReferencesExist(t *testing.T) {
 func TestHostRollbackAndBackupContracts(t *testing.T) {
 	install := readAsset(t, "install-host.sh")
 	restore := readAsset(t, "restore-discrawl.sh")
+	tailUnit := readAsset(t, "discrawl-tail.service")
+	syncUnit := readAsset(t, "discrawl-sync.service")
+	apiUnit := readAsset(t, "discrawl-api.service")
+	for name, unit := range map[string]string{"tail": tailUnit, "sync": syncUnit} {
+		if !strings.Contains(unit, "Environment=DISCRAWL_DB_GROUP_READABLE=1") {
+			t.Errorf("%s writer must preserve the deployment-only archive group-read grant", name)
+		}
+	}
+	if !strings.Contains(apiUnit, "ReadOnlyPaths=/var/lib/discrawl/archive.db") {
+		t.Error("archive API must remain kernel-enforced read-only even when the writer grants group read")
+	}
 	for _, expected := range []string{
 		"apt-get install -y -qq ca-certificates curl gzip python3 sqlite3 systemd-resolved",
 		"bot-token.env", "archive.db", "rollback_upgrade", "rm -f /var/lib/discrawl/projection/state.json",

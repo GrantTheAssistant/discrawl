@@ -10,6 +10,7 @@ User=discrawl-tail
 Group=discrawl
 EnvironmentFile=/etc/discrawl/bot-token.env
 Environment=GOMEMLIMIT=500MiB
+Environment=DISCRAWL_DB_GROUP_READABLE=1
 ExecStartPre=/usr/bin/test -x /usr/bin/curl
 ExecStartPre=/usr/bin/getent ahosts discord.com
 ExecStartPre=/bin/sh -c '! /usr/bin/curl --noproxy "*" --fail --silent --show-error --max-time 2 -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token'

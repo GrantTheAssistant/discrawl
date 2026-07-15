@@ -1670,6 +1670,22 @@ func TestOpenTightensDBFilePerms(t *testing.T) {
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
+func TestOpenAllowsExplicitDeploymentGroupRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows does not expose unix permission bits")
+	}
+
+	t.Setenv("DISCRAWL_DB_GROUP_READABLE", "1")
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := Open(context.Background(), dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+}
+
 func TestOpenCreatesQueryIndexes(t *testing.T) {
 	t.Parallel()
 
