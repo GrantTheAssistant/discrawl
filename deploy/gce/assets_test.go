@@ -406,6 +406,26 @@ func TestProjectionCheckpointRejectsMergedFlagsFromOlderSchema(t *testing.T) {
 	}
 }
 
+func TestProvisionWaitsForIAPSSHAcrossHostRestarts(t *testing.T) {
+	provision := readAsset(t, "provision.sh")
+	for _, expected := range []string{
+		"wait_for_iap_ssh()",
+		`--tunnel-through-iap --quiet --command=true`,
+		`echo "VM did not become reachable through IAP SSH"`,
+	} {
+		if !strings.Contains(provision, expected) {
+			t.Errorf("provision missing restart readiness contract %q", expected)
+		}
+	}
+	if strings.Count(provision, "wait_for_iap_ssh\n") != 2 {
+		t.Fatalf("provision must wait before remote install and after steady-state resize")
+	}
+	if !strings.Contains(provision, "wait_for_iap_ssh\ngcloud compute scp") ||
+		!strings.Contains(provision, "wait_for_iap_ssh\n\n\"${SCRIPT_DIR}/verify-deployment.sh\"") {
+		t.Fatal("IAP SSH readiness waits must guard both remote installation and verification")
+	}
+}
+
 func TestReleasePackagesBothBinaries(t *testing.T) {
 	release := readAsset(t, filepath.Join("..", "..", ".goreleaser.yaml"))
 	for _, expected := range []string{"id: discrawl", "id: discrawl-api", "main: ./cmd/discrawl-api"} {

@@ -42,6 +42,19 @@ router="${VM_NAME}-router"
 nat="${VM_NAME}-public-nat"
 snapshot_policy="${VM_NAME}-weekly"
 
+wait_for_iap_ssh() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if gcloud compute ssh "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" \
+      --tunnel-through-iap --quiet --command=true >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 10
+  done
+  echo "VM did not become reachable through IAP SSH" >&2
+  return 1
+}
+
 required_services=(compute.googleapis.com firebasedatabase.googleapis.com firestore.googleapis.com \
   storage.googleapis.com logging.googleapis.com monitoring.googleapis.com secretmanager.googleapis.com)
 if [[ "${DISCRAWL_APIS_PRE_ENABLED:-false}" == true ]]; then
@@ -245,6 +258,7 @@ printf 'DISCRAWL_BACKUP_BUCKET=%s\n' "${BACKUP_BUCKET}" > "${stage}/backup.env"
 printf 'DISCORD_GUILD_ID=%s\n' "${DISCORD_GUILD_ID}" > "${stage}/install.env"
 
 remote_stage="/tmp/discrawl-install-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+wait_for_iap_ssh
 gcloud compute scp --recurse "${stage}" "${VM_NAME}:${remote_stage}" --project="${PROJECT_ID}" --zone="${ZONE}" --tunnel-through-iap --quiet
 gcloud compute ssh "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" --tunnel-through-iap \
   --command="rc=0; sudo '${remote_stage}/install-host.sh' || rc=\$?; cleanup=0; sudo rm -rf -- '${remote_stage}' || cleanup=\$?; if [[ \$rc -ne 0 ]]; then exit \$rc; fi; exit \$cleanup"
@@ -258,5 +272,6 @@ if [[ "${machine_type}" != e2-micro ]]; then
   gcloud compute instances set-machine-type "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" --machine-type=e2-micro
   gcloud compute instances start "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" --quiet
 fi
+wait_for_iap_ssh
 
 "${SCRIPT_DIR}/verify-deployment.sh"
