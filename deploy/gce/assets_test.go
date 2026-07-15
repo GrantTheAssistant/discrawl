@@ -208,6 +208,9 @@ func TestIsolationAndRetentionContracts(t *testing.T) {
 		bucketProjectAt > bucketMutationAt || bucketProjectAt > remoteInstallAt {
 		t.Error("provision must prove backup bucket ownership before mutation or remote installation")
 	}
+	if !strings.Contains(provision, `gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --raw --format=json`) {
+		t.Error("backup bucket ownership proof must inspect the raw API schema containing projectNumber")
+	}
 	var lifecycle struct {
 		Rule []json.RawMessage `json:"rule"`
 	}
